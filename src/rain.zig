@@ -488,3 +488,32 @@ test "sample ring retains newest values" {
     try std.testing.expectEqual(@as(u64, 10), sorted[0]);
     try std.testing.expectEqual(@as(u64, sample_capacity + 9), sorted[sorted.len - 1]);
 }
+
+test "fixed seed and geometry have deterministic semantic evolution" {
+    var prng_a = std.Random.DefaultPrng.init(default_seed);
+    var prng_b = std.Random.DefaultPrng.init(default_seed);
+    var state_a = try State.init(std.testing.allocator, prng_a.random(), 85, 79);
+    defer state_a.deinit();
+    var state_b = try State.init(std.testing.allocator, prng_b.random(), 85, 79);
+    defer state_b.deinit();
+
+    for (0..120) |_| {
+        state_a.advance();
+        state_b.advance();
+        try std.testing.expectEqual(state_a.drops.len, state_b.drops.len);
+        for (state_a.drops, state_b.drops) |a, b| {
+            try std.testing.expectEqual(a.col, b.col);
+            try std.testing.expectEqual(a.row, b.row);
+            try std.testing.expectEqual(a.speed, b.speed);
+            try std.testing.expectEqual(a.color, b.color);
+            try std.testing.expectEqual(a.shape, b.shape);
+        }
+        for (state_a.current, state_b.current) |a, b| {
+            try std.testing.expectEqual(a.glyph, b.glyph);
+            try std.testing.expectEqual(a.color, b.color);
+            try std.testing.expectEqual(a.occupied, b.occupied);
+        }
+        state_a.swap();
+        state_b.swap();
+    }
+}
