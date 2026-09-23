@@ -18,9 +18,13 @@ const Config = struct {
     cols: ?u16 = null,
     rows: ?u16 = null,
     alternate_screen: bool = true,
+    synchronized_output: bool = false,
     metrics: bool = true,
     assert_min_fps: ?f64 = null,
 };
+
+const synchronized_output_begin = "\x1b[?2026h";
+const synchronized_output_end = "\x1b[?2026l";
 
 const Drop = struct {
     col: u16,
@@ -170,17 +174,24 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         }
         if (input.wantsQuit()) break;
 
+        var clear_before_frame = false;
         if (liveSize(config)) |size| {
             if (size.cols != state.cols or size.rows != state.rows) {
                 try state.resize(size.cols, size.rows);
-                try out.writeAll("\x1b[0m\x1b[2J\x1b[H");
+                clear_before_frame = true;
             }
         }
 
         const frame_started = std.Io.Clock.Timestamp.now(init.io, .awake);
         state.advance();
-        changed_cells += try emitDiff(out, state.previous, state.current, state.cols);
-        try out.flush();
+        changed_cells += try emitFrame(
+            out,
+            state.previous,
+            state.current,
+            state.cols,
+            clear_before_frame,
+            config.synchronized_output,
+        );
         state.swap();
 
         const frame_done = std.Io.Clock.Timestamp.now(init.io, .awake);
@@ -251,6 +262,8 @@ fn parseArgs(args: []const []const u8) !Config {
             config.rows = try parseDimension(args[i]);
         } else if (std.mem.eql(u8, arg, "--no-alt-screen")) {
             config.alternate_screen = false;
+        } else if (std.mem.eql(u8, arg, "--synchronized-output")) {
+            config.synchronized_output = true;
         } else if (std.mem.eql(u8, arg, "--no-metrics")) {
             config.metrics = false;
         } else if (std.mem.eql(u8, arg, "--assert-min-fps")) {
@@ -293,6 +306,8 @@ fn usage() void {
         \\  --rows N            fixed rows; otherwise follow terminal
         \\  --assert-min-fps N  exit 3 if producer throughput falls below N
         \\  --no-alt-screen     render in the current screen
+        \\  --synchronized-output
+        \\                      bracket each semantic frame with CSI ?2026
         \\  --no-metrics        suppress final JSON receipt
         \\
         \\Press q or Ctrl-C to stop an interactive run.
@@ -330,6 +345,27 @@ fn leaveScreen(out: anytype, alternate: bool) void {
     out.writeAll("\x1b[0m\x1b[2J\x1b[H\x1b[?25h") catch {};
     if (alternate) out.writeAll("\x1b[?1049l") catch {};
     out.flush() catch {};
+}
+
+fn emitFrame(
+    out: anytype,
+    previous: []const Cell,
+    current: []const Cell,
+    cols: u16,
+    clear_before: bool,
+    synchronized_output: bool,
+) !u64 {
+    if (synchronized_output) try out.writeAll(synchronized_output_begin);
+    errdefer if (synchronized_output) {
+        out.writeAll(synchronized_output_end) catch {};
+        out.flush() catch {};
+    };
+
+    if (clear_before) try out.writeAll("\x1b[0m\x1b[2J\x1b[H");
+    const changed = try emitDiff(out, previous, current, cols);
+    if (synchronized_output) try out.writeAll(synchronized_output_end);
+    try out.flush();
+    return changed;
 }
 
 fn emitDiff(out: anytype, previous: []const Cell, current: []const Cell, cols: u16) !u64 {
@@ -423,13 +459,14 @@ fn report(
     const late_sorted = late_samples.sorted(&late_scratch);
 
     std.debug.print(
-        "{{\"type\":\"tui_zoo.rain/v1\",\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"changed_cells\":{d},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
+        "{{\"type\":\"tui_zoo.rain/v1\",\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"changed_cells\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
         .{
             config.fps,
             actual_fps,
             frames,
             skipped_slots,
             changed_cells,
+            config.synchronized_output,
             percentileUs(frame_sorted, 50),
             percentileUs(frame_sorted, 95),
             percentileUs(frame_sorted, 99),
@@ -463,6 +500,37 @@ test "upstream visible speed colors include curses pair offset" {
 test "fixed geometry disables live resize" {
     const config = Config{ .cols = 85, .rows = 79 };
     try std.testing.expectEqual(@as(?terminal.Size, null), liveSize(config));
+}
+
+test "synchronized output brackets exactly one semantic frame" {
+    const previous = [_]Cell{.{}};
+    const current = [_]Cell{.{ .glyph = '|', .color = 42, .occupied = true }};
+    var storage: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&storage);
+
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        try emitFrame(&writer, &previous, &current, 1, false, true),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[?2026h\x1b[1;1H\x1b[38;5;42m|\x1b[0m\x1b[?2026l",
+        writer.buffered(),
+    );
+}
+
+test "resize clear remains inside synchronized frame ownership" {
+    const cells = [_]Cell{.{}};
+    var storage: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&storage);
+
+    try std.testing.expectEqual(
+        @as(u64, 0),
+        try emitFrame(&writer, &cells, &cells, 1, true, true),
+    );
+    try std.testing.expectEqualStrings(
+        "\x1b[?2026h\x1b[0m\x1b[2J\x1b[H\x1b[?2026l",
+        writer.buffered(),
+    );
 }
 
 test "cell count is explicitly bounded" {
