@@ -1,4 +1,5 @@
 const std = @import("std");
+const latency = @import("latency.zig");
 const rain = @import("rain.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -21,6 +22,18 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, args[1], "latency")) {
+        latency.run(init, args[2..]) catch |err| switch (err) {
+            error.HelpRequested => {},
+            error.InvalidArgs => {
+                std.debug.print("{{\"error\":\"invalid_args\",\"workload\":\"latency\"}}\n", .{});
+                std.process.exit(2);
+            },
+            else => return err,
+        };
+        return;
+    }
+
     std.debug.print("{{\"error\":\"unknown_workload\",\"value\":\"{s}\"}}\n", .{args[1]});
     std.process.exit(2);
 }
@@ -31,12 +44,14 @@ fn usage() void {
         \\
         \\workloads:
         \\  rain    deterministic visual rain with explicit frame cadence
+        \\  latency immediate one-cell reaction to each input byte
         \\
-        \\run tui-zoo rain --help for workload options.
+        \\run tui-zoo <workload> --help for workload options.
         \\
     , .{});
 }
 
 test {
+    _ = latency;
     _ = rain;
 }

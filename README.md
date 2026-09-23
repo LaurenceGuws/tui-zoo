@@ -47,3 +47,18 @@ The producer receipt does not claim displayed FPS. It proves how many frames the
 ## Provenance
 
 The visual model is based on nkleemann/ascii-rain, MIT licensed. The implementation here is new Zig code and does not use ncurses.
+
+## Latency
+
+`latency` is a deliberately tiny input-response workload. It enters raw mode,
+waits for input bytes, and toggles one visible cell immediately for each byte.
+The workload writes JSONL timing receipts to stderr after the terminal bytes have
+been flushed.
+
+    zig build run -Doptimize=ReleaseFast -- latency --samples 32
+
+Use `--synchronized-output` when the benchmark wants each marker mutation
+bracketed by CSI `?2026`. The workload's `read_to_flush_us` metric measures only
+successful stdin read to stdout flush. A benchmark host must independently
+measure compositor delivery and presentation; TUI Zoo does not claim
+input-to-photon latency.
