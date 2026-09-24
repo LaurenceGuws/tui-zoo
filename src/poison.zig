@@ -13,6 +13,12 @@ const max_dose: u16 = 4096;
 const sample_capacity = 4096;
 const sync_begin = "\x1b[?2026h";
 const sync_end = "\x1b[?2026l";
+const alnum_glyphs = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+const GlyphSet = enum {
+    printable,
+    alnum,
+};
 
 const Config = struct {
     fps: f64 = default_fps,
@@ -21,6 +27,7 @@ const Config = struct {
     cols: ?u16 = null,
     rows: ?u16 = null,
     dose: u16 = 1,
+    glyph_set: GlyphSet = .printable,
     synchronized_output: bool = false,
     alternate_screen: bool = true,
 };
@@ -90,7 +97,7 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
             const row = 1 + random.uintLessThan(u16, size.rows);
             const col = 1 + random.uintLessThan(u16, size.cols);
             const color = 16 + random.uintLessThan(u8, 216);
-            const glyph: u8 = '!' + random.uintLessThan(u8, 94);
+            const glyph = randomGlyph(random, config.glyph_set);
             try out.print("\x1b[{d};{d}H\x1b[38;5;{d}m", .{ row, col, color });
             try out.writeByte(glyph);
             writes += 1;
@@ -149,6 +156,10 @@ fn parseArgs(args: []const []const u8) !Config {
             if (i >= args.len) return error.InvalidArgs;
             config.dose = std.fmt.parseUnsigned(u16, args[i], 10) catch return error.InvalidArgs;
             if (config.dose == 0 or config.dose > max_dose) return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--glyph-set")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            config.glyph_set = std.meta.stringToEnum(GlyphSet, args[i]) orelse return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--synchronized-output")) {
             config.synchronized_output = true;
         } else if (std.mem.eql(u8, arg, "--no-alt-screen")) {
@@ -156,6 +167,13 @@ fn parseArgs(args: []const []const u8) !Config {
         } else return error.InvalidArgs;
     }
     return config;
+}
+
+fn randomGlyph(random: std.Random, glyph_set: GlyphSet) u8 {
+    return switch (glyph_set) {
+        .printable => '!' + random.uintLessThan(u8, 94),
+        .alnum => alnum_glyphs[random.uintLessThan(usize, alnum_glyphs.len)],
+    };
 }
 
 fn parseDimension(text: []const u8) !u16 {
@@ -194,8 +212,8 @@ fn report(config: Config, size: terminal.Size, frames: u64, writes: u64, elapsed
     const l = late_samples.sorted(&late_scratch);
     const fps = if (elapsed_ns == 0) 0.0 else @as(f64, @floatFromInt(frames)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
     std.debug.print(
-        "{{\"type\":\"tui_zoo.poison/v1\",\"dose\":{d},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
-        .{ config.dose, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
+        "{{\"type\":\"tui_zoo.poison/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
+        .{ config.dose, @tagName(config.glyph_set), config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
     );
 }
 
@@ -216,6 +234,7 @@ fn usage() void {
         \\  --fps N              target semantic-frame cadence (max 2000)
         \\  --duration-ms N      bounded duration (max 60000)
         \\  --seed N             deterministic PRNG seed
+        \\  --glyph-set NAME      printable (default) or alnum
         \\  --cols N --rows N    fixed geometry
         \\  --synchronized-output bracket each frame with CSI ?2026
         \\  --no-alt-screen      render in current screen
@@ -228,6 +247,8 @@ test "poison configuration and geometry are bounded" {
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "0" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "4097" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--fps", "2001" }));
+    try std.testing.expectEqual(GlyphSet.alnum, (try parseArgs(&.{ "--glyph-set", "alnum" })).glyph_set);
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--glyph-set", "emoji" }));
     try std.testing.expectError(error.GeometryTooLarge, cellCount(4096, 4096));
 }
 
@@ -241,5 +262,19 @@ test "poison seed drives deterministic operation stream" {
         try std.testing.expectEqual(ar.uintLessThan(u16, 47), br.uintLessThan(u16, 47));
         try std.testing.expectEqual(ar.uintLessThan(u8, 216), br.uintLessThan(u8, 216));
         try std.testing.expectEqual(ar.uintLessThan(u8, 94), br.uintLessThan(u8, 94));
+    }
+}
+
+test "poison glyph sets stay deterministic and bounded" {
+    var a = std.Random.DefaultPrng.init(default_seed);
+    var b = std.Random.DefaultPrng.init(default_seed);
+    const ar = a.random();
+    const br = b.random();
+    for (0..128) |_| {
+        try std.testing.expectEqual(randomGlyph(ar, .printable), randomGlyph(br, .printable));
+        const left = randomGlyph(ar, .alnum);
+        const right = randomGlyph(br, .alnum);
+        try std.testing.expectEqual(left, right);
+        try std.testing.expect(std.mem.indexOfScalar(u8, alnum_glyphs, left) != null);
     }
 }

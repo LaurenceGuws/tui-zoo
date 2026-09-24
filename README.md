@@ -51,7 +51,7 @@ The producer receipt does not claim displayed FPS. It proves how many frames the
 
     tui-zoo poison --dose 64 --fps 240 --duration-ms 8000 --cols 192 --rows 47
 
-Use `--synchronized-output` to bracket each dose as one application frame. The JSON receipt reports producer cadence, skipped slots, writes, geometry and producer-side timing. The workload intentionally does not know which terminal is running it and does not define a terminal tap out itself; the benchmark host owns resource usage, presentation, responsiveness, and saturation policy.
+Use `--synchronized-output` to bracket each dose as one application frame. `--glyph-set printable` keeps the broad punctuation-heavy default; `--glyph-set alnum` isolates ordinary independent glyph cells so tiny-delta and retained-cell paths can be pressured without contextual-operator shaping becoming the workload. The JSON receipt names the glyph set together with producer cadence, skipped slots, writes, geometry and producer-side timing. The workload intentionally does not know which terminal is running it and does not define a terminal tap out itself; the benchmark host owns resource usage, presentation, responsiveness, and saturation policy.
 
 A useful poison sweep holds seed/geometry/fps constant and increases dose geometrically, for example 1, 4, 16, 64, 256, 1024, 4096. This produces a dose curve instead of a single benchmark score.
 
