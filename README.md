@@ -44,6 +44,17 @@ Press q or Ctrl-C to exit an interactive run.
 
 The producer receipt does not claim displayed FPS. It proves how many frames the workload emitted, whether stdout backpressure made it skip cadence slots, whether semantic frame bracketing was enabled, and how much producer-side frame work occurred. Presentation FPS remains the terminal or benchmark host's measurement.
 
+
+## Poison
+
+`poison` is the first explicit dose-curve workload. Each semantic frame performs exactly N independent cursor + 256-color + glyph writes at deterministic random coordinates. Geometry and cadence remain fixed while `--dose` increases parser, canonical-state, and rendering pressure.
+
+    tui-zoo poison --dose 64 --fps 240 --duration-ms 8000 --cols 192 --rows 47
+
+Use `--synchronized-output` to bracket each dose as one application frame. The JSON receipt reports producer cadence, skipped slots, writes, geometry and producer-side timing. The workload intentionally does not know which terminal is running it and does not define a terminal tap out itself; the benchmark host owns resource usage, presentation, responsiveness, and saturation policy.
+
+A useful poison sweep holds seed/geometry/fps constant and increases dose geometrically, for example 1, 4, 16, 64, 256, 1024, 4096. This produces a dose curve instead of a single benchmark score.
+
 ## Provenance
 
 The visual model is based on nkleemann/ascii-rain, MIT licensed. The implementation here is new Zig code and does not use ncurses.
