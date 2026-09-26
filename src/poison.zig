@@ -159,7 +159,7 @@ fn parseArgs(args: []const []const u8) !Config {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
             config.fps = std.fmt.parseFloat(f64, args[i]) catch return error.InvalidArgs;
-            if (!std.math.isFinite(config.fps) or config.fps <= 0 or config.fps > 2000) return error.InvalidArgs;
+            if (!std.math.isFinite(config.fps) or config.fps <= 0 or config.fps > 1000) return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--duration-ms")) {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
@@ -310,7 +310,7 @@ fn usage() void {
         \\
         \\options:
         \\  --dose N             writes per semantic frame (1..4096, default 1)
-        \\  --fps N              target semantic-frame cadence (max 2000)
+        \\  --fps N              target semantic-frame cadence (max 1000)
         \\  --duration-ms N      bounded duration (max 60000)
         \\  --frames N           stop after emitted semantic-frame count
         \\  --oracle             emit expected final-cell SHA-256; requires --frames and --no-alt-screen
@@ -346,7 +346,7 @@ test "poison configuration and geometry are bounded" {
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--frames", "0" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "0" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "4097" }));
-    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--fps", "2001" }));
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--fps", "1001" }));
     try std.testing.expectEqual(GlyphSet.alnum, (try parseArgs(&.{ "--glyph-set", "alnum" })).glyph_set);
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--glyph-set", "emoji" }));
     try std.testing.expectError(error.GeometryTooLarge, cellCount(4096, 4096));
