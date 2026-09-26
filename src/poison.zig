@@ -22,7 +22,8 @@ const GlyphSet = enum {
 
 const Config = struct {
     fps: f64 = default_fps,
-    duration_ms: u64 = default_duration_ms,
+    duration_ms: ?u64 = null,
+    frames: ?u64 = null,
     seed: u64 = default_seed,
     cols: ?u16 = null,
     rows: ?u16 = null,
@@ -86,8 +87,13 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     var late_samples = Samples{};
 
     while (!terminal.stopRequested()) {
-        const elapsed = started.durationTo(std.Io.Clock.Timestamp.now(init.io, .awake)).raw.nanoseconds;
-        if (elapsed >= @as(i96, config.duration_ms) * std.time.ns_per_ms) break;
+        if (config.frames) |limit| {
+            if (frames >= limit) break;
+        }
+        if (config.duration_ms) |duration_ms| {
+            const elapsed = started.durationTo(std.Io.Clock.Timestamp.now(init.io, .awake)).raw.nanoseconds;
+            if (elapsed >= @as(i96, duration_ms) * std.time.ns_per_ms) break;
+        }
         if (input.wantsQuit()) break;
 
         const frame_started = std.Io.Clock.Timestamp.now(init.io, .awake);
@@ -137,8 +143,15 @@ fn parseArgs(args: []const []const u8) !Config {
         } else if (std.mem.eql(u8, arg, "--duration-ms")) {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
-            config.duration_ms = std.fmt.parseUnsigned(u64, args[i], 10) catch return error.InvalidArgs;
-            if (config.duration_ms == 0 or config.duration_ms > 60_000) return error.InvalidArgs;
+            const duration_ms = std.fmt.parseUnsigned(u64, args[i], 10) catch return error.InvalidArgs;
+            if (duration_ms == 0 or duration_ms > 60_000) return error.InvalidArgs;
+            config.duration_ms = duration_ms;
+        } else if (std.mem.eql(u8, arg, "--frames")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            const frames = std.fmt.parseUnsigned(u64, args[i], 10) catch return error.InvalidArgs;
+            if (frames == 0) return error.InvalidArgs;
+            config.frames = frames;
         } else if (std.mem.eql(u8, arg, "--seed")) {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
@@ -166,6 +179,7 @@ fn parseArgs(args: []const []const u8) !Config {
             config.alternate_screen = false;
         } else return error.InvalidArgs;
     }
+    if (config.duration_ms == null and config.frames == null) config.duration_ms = default_duration_ms;
     return config;
 }
 
@@ -233,6 +247,7 @@ fn usage() void {
         \\  --dose N             writes per semantic frame (1..4096, default 1)
         \\  --fps N              target semantic-frame cadence (max 2000)
         \\  --duration-ms N      bounded duration (max 60000)
+        \\  --frames N           stop after emitted semantic-frame count
         \\  --seed N             deterministic PRNG seed
         \\  --glyph-set NAME      printable (default) or alnum
         \\  --cols N --rows N    fixed geometry
@@ -243,7 +258,20 @@ fn usage() void {
 }
 
 test "poison configuration and geometry are bounded" {
+    const defaults = try parseArgs(&.{});
+    try std.testing.expectEqual(@as(?u64, default_duration_ms), defaults.duration_ms);
+    try std.testing.expectEqual(@as(?u64, null), defaults.frames);
+
+    const fixed_frames = try parseArgs(&.{ "--frames", "64" });
+    try std.testing.expectEqual(@as(?u64, null), fixed_frames.duration_ms);
+    try std.testing.expectEqual(@as(?u64, 64), fixed_frames.frames);
+
+    const dual_limit = try parseArgs(&.{ "--duration-ms", "1000", "--frames", "64" });
+    try std.testing.expectEqual(@as(?u64, 1000), dual_limit.duration_ms);
+    try std.testing.expectEqual(@as(?u64, 64), dual_limit.frames);
+
     try std.testing.expectEqual(@as(u16, 64), (try parseArgs(&.{ "--dose", "64" })).dose);
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--frames", "0" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "0" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "4097" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--fps", "2001" }));
