@@ -9,7 +9,7 @@ const default_cols: u16 = 80;
 const default_rows: u16 = 24;
 const max_dimension: u16 = 4096;
 const max_cells: usize = 1024 * 1024;
-const max_dose: u16 = 4096;
+const max_dose: u32 = 65_536;
 const sample_capacity = 4096;
 const sync_begin = "\x1b[?2026h";
 const sync_end = "\x1b[?2026l";
@@ -28,7 +28,7 @@ const Config = struct {
     oracle: bool = false,
     cols: ?u16 = null,
     rows: ?u16 = null,
-    dose: u16 = 1,
+    dose: u32 = 1,
     glyph_set: GlyphSet = .printable,
     synchronized_output: bool = false,
     alternate_screen: bool = true,
@@ -113,7 +113,7 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
 
         const frame_started = std.Io.Clock.Timestamp.now(init.io, .awake);
         if (config.synchronized_output) try out.writeAll(sync_begin);
-        var operation: u16 = 0;
+        var operation: u32 = 0;
         while (operation < config.dose) : (operation += 1) {
             const row = 1 + random.uintLessThan(u16, size.rows);
             const col = 1 + random.uintLessThan(u16, size.cols);
@@ -189,7 +189,7 @@ fn parseArgs(args: []const []const u8) !Config {
         } else if (std.mem.eql(u8, arg, "--dose")) {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
-            config.dose = std.fmt.parseUnsigned(u16, args[i], 10) catch return error.InvalidArgs;
+            config.dose = std.fmt.parseUnsigned(u32, args[i], 10) catch return error.InvalidArgs;
             if (config.dose == 0 or config.dose > max_dose) return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--glyph-set")) {
             i += 1;
@@ -309,7 +309,7 @@ fn usage() void {
         \\Increase dose to move terminal parser/state/render pressure while geometry and cadence stay fixed.
         \\
         \\options:
-        \\  --dose N             writes per semantic frame (1..4096, default 1)
+        \\  --dose N             writes per semantic frame (1..65536, default 1)
         \\  --fps N              target semantic-frame cadence (max 1000)
         \\  --duration-ms N      bounded duration (max 60000)
         \\  --frames N           stop after emitted semantic-frame count
@@ -345,7 +345,8 @@ test "poison configuration and geometry are bounded" {
     try std.testing.expectEqual(@as(u16, 64), (try parseArgs(&.{ "--dose", "64" })).dose);
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--frames", "0" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "0" }));
-    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "4097" }));
+    try std.testing.expectEqual(@as(u32, 65_536), (try parseArgs(&.{ "--dose", "65536" })).dose);
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--dose", "65537" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--fps", "1001" }));
     try std.testing.expectEqual(GlyphSet.alnum, (try parseArgs(&.{ "--glyph-set", "alnum" })).glyph_set);
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--glyph-set", "emoji" }));
