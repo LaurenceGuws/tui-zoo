@@ -45,15 +45,27 @@ Press q or Ctrl-C to exit an interactive run.
 The producer receipt does not claim displayed FPS. It proves how many frames the workload emitted, whether stdout backpressure made it skip cadence slots, whether semantic frame bracketing was enabled, and how much producer-side frame work occurred. Presentation FPS remains the terminal or benchmark host's measurement.
 
 
-## Poison
+## Cells
 
-`poison` is the first explicit dose-curve workload. Each semantic frame performs exactly N independent cursor + 256-color + glyph writes at deterministic random coordinates. Geometry and cadence remain fixed while `--dose` increases parser, canonical-state, and rendering pressure.
+`cells` is the first explicit dose-curve workload. Each semantic frame performs exactly N independent cursor + 256-color + glyph writes at deterministic random coordinates. Geometry and cadence remain fixed while `--dose` increases parser, canonical-state, and rendering pressure.
 
-    tui-zoo poison --dose 64 --fps 240 --duration-ms 8000 --cols 192 --rows 47
+    tui-zoo cells --dose 64 --fps 240 --duration-ms 8000 --cols 192 --rows 47
 
-Use `--synchronized-output` to bracket each dose as one application frame. `--glyph-set printable` keeps the broad punctuation-heavy default; `--glyph-set alnum` isolates ordinary independent glyph cells so tiny-delta and retained-cell paths can be pressured without contextual-operator shaping becoming the workload. `--frames N` selects an exact semantic-frame count; with fixed seed, geometry, dose, glyph set and synchronization mode this makes the emitted operation stream deterministic for correctness canaries as well as dose sweeps. `--oracle` additionally models the workload's own final row-major cell state and adds `oracle_sha256` to the stderr JSON receipt. Oracle mode requires exact `--frames` and `--no-alt-screen`, and leaves the final cells visible after restoring SGR/cursor state so an external terminal host can independently compare its observed cells. When neither `--frames` nor `--duration-ms` is supplied, the existing 8-second default remains. The JSON receipt names the glyph set together with producer cadence, skipped slots, writes, geometry and producer-side timing. The workload intentionally does not know which terminal is running it and does not define a terminal tap out itself; the benchmark host owns resource usage, presentation, responsiveness, and saturation policy.
+Use `--synchronized-output` to bracket each dose as one application frame. `--glyph-set printable` keeps the broad punctuation-heavy default; `--glyph-set alnum` isolates ordinary independent glyph cells so tiny-delta and retained-cell paths can be pressured without contextual-operator shaping becoming the workload. `--frames N` selects an exact semantic-frame count; with fixed seed, geometry, dose, glyph set and synchronization mode this makes the emitted operation stream deterministic for correctness canaries as well as dose sweeps. `--oracle` additionally models the workload's own final row-major cell state and adds `oracle_sha256` to the stderr JSON receipt. The oracle currently covers ASCII foreground writes only; Unicode and background modes reject `--oracle`. Oracle mode requires exact `--frames` and `--no-alt-screen`, and leaves the final cells visible after restoring SGR/cursor state so an external terminal host can independently compare its observed cells. When neither `--frames` nor `--duration-ms` is supplied, the existing 8-second default remains. The JSON receipt names the glyph set together with producer cadence, skipped slots, writes, geometry and producer-side timing. The workload intentionally does not know which terminal is running it and does not define a terminal tap out itself; the benchmark host owns resource usage, presentation, responsiveness, and saturation policy.
 
-A useful poison sweep holds seed/geometry/fps constant and increases dose geometrically, for example 1, 4, 16, 64, 256, 1024, 4096. This produces a dose curve instead of a single benchmark score.
+A useful cell sweep holds seed/geometry/fps constant and increases dose geometrically, for example 1, 4, 16, 64, 256, 1024, 4096. This produces a dose curve instead of a single benchmark score.
+
+Use `--background` to add independently changing 256-color backgrounds. Use
+--glyph-set unicode for Greek/Cyrillic text, box drawing, a combining accent,
+CJK wide glyphs and emoji. Unicode mode requires at least two columns and reserves
+the rightmost column to keep two-column clusters from wrapping. These are byte
+and rendering pressure canaries, with no claim of Unicode screen-state validation.
+
+    tui-zoo cells --glyph-set unicode --background --dose 4096 --fps 240 --duration-ms 8000 --synchronized-output
+
+The command and receipt are now named `cells` (`tui_zoo.cells/v1`); the default
+seed and ASCII stdout stream are unchanged. The oracle hash namespace is now
+`tui-zoo.cells.oracle/v1`. No legacy command alias is retained.
 
 ## Provenance
 

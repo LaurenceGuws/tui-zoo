@@ -13,11 +13,14 @@ const max_dose: u32 = 65_536;
 const sample_capacity = 4096;
 const sync_begin = "\x1b[?2026h";
 const sync_end = "\x1b[?2026l";
+const printable_glyphs = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+const unicode_glyphs = [_][]const u8{ "Ω", "Ж", "λ", "─", "é", "界", "語", "🙂", "🚀" };
 const alnum_glyphs = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 const GlyphSet = enum {
     printable,
     alnum,
+    unicode,
 };
 
 const Config = struct {
@@ -30,6 +33,7 @@ const Config = struct {
     rows: ?u16 = null,
     dose: u32 = 1,
     glyph_set: GlyphSet = .printable,
+    background: bool = false,
     synchronized_output: bool = false,
     alternate_screen: bool = true,
 };
@@ -73,6 +77,7 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     const config = try parseArgs(args);
     const size = resolvedSize(config);
     const cells_count = try cellCount(size.cols, size.rows);
+    const columns = try writeColumns(size.cols, config.glyph_set);
     const allocator = std.heap.page_allocator;
     var oracle_cells: ?[]OracleCell = null;
     if (config.oracle) {
@@ -116,14 +121,15 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         var operation: u32 = 0;
         while (operation < config.dose) : (operation += 1) {
             const row = 1 + random.uintLessThan(u16, size.rows);
-            const col = 1 + random.uintLessThan(u16, size.cols);
+            const col = 1 + random.uintLessThan(u16, columns);
             const color = 16 + random.uintLessThan(u8, 216);
             const glyph = randomGlyph(random, config.glyph_set);
             try out.print("\x1b[{d};{d}H\x1b[38;5;{d}m", .{ row, col, color });
-            try out.writeByte(glyph);
+            if (config.background) try out.print("\x1b[48;5;{d}m", .{16 + random.uintLessThan(u8, 216)});
+            try out.writeAll(glyph);
             if (oracle_cells) |cells| {
                 const index = (@as(usize, row) - 1) * @as(usize, size.cols) + (@as(usize, col) - 1);
-                cells[index] = .{ .glyph = glyph, .color = color, .occupied = true };
+                cells[index] = .{ .glyph = glyph[0], .color = color, .occupied = true };
             }
             writes += 1;
         }
@@ -195,23 +201,33 @@ fn parseArgs(args: []const []const u8) !Config {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
             config.glyph_set = std.meta.stringToEnum(GlyphSet, args[i]) orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--background")) {
+            config.background = true;
         } else if (std.mem.eql(u8, arg, "--synchronized-output")) {
             config.synchronized_output = true;
         } else if (std.mem.eql(u8, arg, "--no-alt-screen")) {
             config.alternate_screen = false;
         } else return error.InvalidArgs;
     }
-    if (config.oracle and (config.frames == null or config.duration_ms != null or config.alternate_screen))
+    if (config.oracle and (config.frames == null or config.duration_ms != null or config.alternate_screen or config.background or config.glyph_set == .unicode))
         return error.InvalidArgs;
     if (config.duration_ms == null and config.frames == null) config.duration_ms = default_duration_ms;
     return config;
 }
 
-fn randomGlyph(random: std.Random, glyph_set: GlyphSet) u8 {
+fn randomGlyph(random: std.Random, glyph_set: GlyphSet) []const u8 {
     return switch (glyph_set) {
-        .printable => '!' + random.uintLessThan(u8, 94),
-        .alnum => alnum_glyphs[random.uintLessThan(usize, alnum_glyphs.len)],
+        .printable => printable_glyphs[random.uintLessThan(u8, 94)..][0..1],
+        .alnum => alnum_glyphs[random.uintLessThan(usize, alnum_glyphs.len)..][0..1],
+        .unicode => unicode_glyphs[random.uintLessThan(usize, unicode_glyphs.len)],
     };
+}
+
+// Reserve the rightmost cell for two-column Unicode clusters, avoiding wrap.
+fn writeColumns(cols: u16, glyph_set: GlyphSet) !u16 {
+    if (glyph_set != .unicode) return cols;
+    if (cols < 2) return error.InvalidArgs;
+    return cols - 1;
 }
 
 fn parseDimension(text: []const u8) !u16 {
@@ -251,7 +267,7 @@ fn leaveScreen(out: anytype, alternate: bool, preserve_final: bool) void {
 fn oracleDigest(size: terminal.Size, cells: []const OracleCell) [32]u8 {
     std.debug.assert(cells.len == @as(usize, size.cols) * @as(usize, size.rows));
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update("tui-zoo.poison.oracle/v1");
+    hasher.update("tui-zoo.cells.oracle/v1");
     var geometry: [4]u8 = undefined;
     std.mem.writeInt(u16, geometry[0..2], size.cols, .big);
     std.mem.writeInt(u16, geometry[2..4], size.rows, .big);
@@ -285,13 +301,13 @@ fn report(config: Config, size: terminal.Size, frames: u64, writes: u64, elapsed
     if (oracle_digest) |digest| {
         const hex = digestHex(&digest);
         std.debug.print(
-            "{{\"type\":\"tui_zoo.poison/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d},\"oracle_sha256\":\"{s}\"}}\n",
-            .{ config.dose, @tagName(config.glyph_set), config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100), &hex },
+            "{{\"type\":\"tui_zoo.cells/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"background\":{},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d},\"oracle_sha256\":\"{s}\"}}\n",
+            .{ config.dose, @tagName(config.glyph_set), config.background, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100), &hex },
         );
     } else {
         std.debug.print(
-            "{{\"type\":\"tui_zoo.poison/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
-            .{ config.dose, @tagName(config.glyph_set), config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
+            "{{\"type\":\"tui_zoo.cells/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"background\":{},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
+            .{ config.dose, @tagName(config.glyph_set), config.background, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
         );
     }
 }
@@ -303,9 +319,9 @@ fn percentileUs(sorted: []const u64, pct: u8) u64 {
 
 fn usage() void {
     std.debug.print(
-        \\usage: tui-zoo poison [options]
+        \\usage: tui-zoo cells [options]
         \\
-        \\Random-cell poison: each frame performs exactly dose independent cursor/color/glyph writes.
+        \\Random-cell canary: each frame performs exactly dose independent cursor/color/glyph writes.
         \\Increase dose to move terminal parser/state/render pressure while geometry and cadence stay fixed.
         \\
         \\options:
@@ -313,9 +329,10 @@ fn usage() void {
         \\  --fps N              target semantic-frame cadence (max 1000)
         \\  --duration-ms N      bounded duration (max 60000)
         \\  --frames N           stop after emitted semantic-frame count
-        \\  --oracle             emit expected final-cell SHA-256; requires --frames and --no-alt-screen
+        \\  --oracle             ASCII foreground cell SHA-256; requires --frames and --no-alt-screen
         \\  --seed N             deterministic PRNG seed
-        \\  --glyph-set NAME      printable (default) or alnum
+        \\  --glyph-set NAME      printable (default), alnum, or unicode
+        \\  --background         random 256-color backgrounds (default off)
         \\  --cols N --rows N    fixed geometry
         \\  --synchronized-output bracket each frame with CSI ?2026
         \\  --no-alt-screen      render in current screen
@@ -323,7 +340,7 @@ fn usage() void {
     , .{});
 }
 
-test "poison configuration and geometry are bounded" {
+test "cells configuration and geometry are bounded" {
     const defaults = try parseArgs(&.{});
     try std.testing.expectEqual(@as(?u64, default_duration_ms), defaults.duration_ms);
     try std.testing.expectEqual(@as(?u64, null), defaults.frames);
@@ -353,7 +370,7 @@ test "poison configuration and geometry are bounded" {
     try std.testing.expectError(error.GeometryTooLarge, cellCount(4096, 4096));
 }
 
-test "poison seed drives deterministic operation stream" {
+test "cells seed drives deterministic operation stream" {
     var a = std.Random.DefaultPrng.init(default_seed);
     var b = std.Random.DefaultPrng.init(default_seed);
     const ar = a.random();
@@ -366,21 +383,21 @@ test "poison seed drives deterministic operation stream" {
     }
 }
 
-test "poison glyph sets stay deterministic and bounded" {
+test "cells glyph sets stay deterministic and bounded" {
     var a = std.Random.DefaultPrng.init(default_seed);
     var b = std.Random.DefaultPrng.init(default_seed);
     const ar = a.random();
     const br = b.random();
     for (0..128) |_| {
-        try std.testing.expectEqual(randomGlyph(ar, .printable), randomGlyph(br, .printable));
+        try std.testing.expectEqualStrings(randomGlyph(ar, .printable), randomGlyph(br, .printable));
         const left = randomGlyph(ar, .alnum);
         const right = randomGlyph(br, .alnum);
-        try std.testing.expectEqual(left, right);
-        try std.testing.expect(std.mem.indexOfScalar(u8, alnum_glyphs, left) != null);
+        try std.testing.expectEqualStrings(left, right);
+        try std.testing.expect(std.mem.indexOfScalar(u8, alnum_glyphs, left[0]) != null);
     }
 }
 
-test "poison oracle digest has stable canonical cell encoding" {
+test "cells oracle digest has stable canonical cell encoding" {
     const cells = [_]OracleCell{
         .{},
         .{ .glyph = 'A', .color = 42, .occupied = true },
@@ -390,7 +407,23 @@ test "poison oracle digest has stable canonical cell encoding" {
     const digest = oracleDigest(.{ .cols = 2, .rows = 2 }, &cells);
     const hex = digestHex(&digest);
     try std.testing.expectEqualStrings(
-        "ba369f7dea82dc2bf0d9f58b6f183916999cb13c4c57e2960b4d983ac01b7a57",
+        "6b297ef21e9ff7a7a3900a0c8ec782f8cbcf67f089a1042a356e81c90db495e2",
         &hex,
     );
+}
+
+test "Unicode clusters and their right-edge margin are bounded" {
+    try std.testing.expectError(error.InvalidArgs, writeColumns(1, .unicode));
+    try std.testing.expectEqual(@as(u16, 1), try writeColumns(2, .unicode));
+    try std.testing.expectEqual(@as(u16, 1), try writeColumns(1, .alnum));
+    for (unicode_glyphs) |glyph| {
+        try std.testing.expect(std.unicode.utf8ValidateSlice(glyph));
+        try std.testing.expect(glyph.len <= 4);
+        try std.testing.expect(std.mem.indexOfScalar(u8, glyph, 0x1b) == null);
+    }
+    const config = try parseArgs(&.{ "--glyph-set", "unicode", "--background" });
+    try std.testing.expectEqual(GlyphSet.unicode, config.glyph_set);
+    try std.testing.expect(config.background);
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--oracle", "--frames", "1", "--no-alt-screen", "--glyph-set", "unicode" }));
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--oracle", "--frames", "1", "--no-alt-screen", "--background" }));
 }

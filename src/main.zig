@@ -1,6 +1,6 @@
 const std = @import("std");
 const latency = @import("latency.zig");
-const poison = @import("poison.zig");
+const cells = @import("cells.zig");
 const rain = @import("rain.zig");
 
 pub fn main(init: std.process.Init) !void {
@@ -23,11 +23,11 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (std.mem.eql(u8, args[1], "poison")) {
-        poison.run(init, args[2..]) catch |err| switch (err) {
+    if (std.mem.eql(u8, args[1], "cells")) {
+        cells.run(init, args[2..]) catch |err| switch (err) {
             error.HelpRequested => {},
             error.InvalidArgs => {
-                std.debug.print("{{\"error\":\"invalid_args\",\"workload\":\"poison\"}}\n", .{});
+                std.debug.print("{{\"error\":\"invalid_args\",\"workload\":\"cells\"}}\n", .{});
                 std.process.exit(2);
             },
             else => return err,
@@ -58,7 +58,7 @@ fn usage() void {
         \\workloads:
         \\  rain    deterministic visual rain with explicit frame cadence
         \\  latency immediate one-cell reaction to each input byte
-        \\  poison  deterministic random-cell dose curve for parser/render pressure
+        \\  cells   deterministic random-cell dose curve for parser/render pressure
         \\
         \\run tui-zoo <workload> --help for workload options.
         \\
@@ -67,6 +67,6 @@ fn usage() void {
 
 test {
     _ = latency;
-    _ = poison;
+    _ = cells;
     _ = rain;
 }
