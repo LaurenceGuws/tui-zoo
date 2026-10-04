@@ -82,6 +82,10 @@ been flushed.
 
 Use `--synchronized-output` when the benchmark wants each marker mutation
 bracketed by CSI `?2026`. The workload's `read_to_flush_us` metric measures only
-successful stdin read to stdout flush. A benchmark host must independently
+successful stdin read to stdout flush. Each sample also exposes the existing
+read and flush timestamps as read_monotonic_ns and flush_monotonic_ns:
+nanoseconds from the same system monotonic clock (CLOCK_MONOTONIC on Linux).
+These let an independent host correlate the response with its own observations.
+A benchmark host must independently
 measure compositor delivery and presentation; TUI Zoo does not claim
 input-to-photon latency.

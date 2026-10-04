@@ -69,8 +69,8 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         reaction_us[emitted] = elapsed_us;
 
         try metrics.print(
-            "{{\"type\":\"tui_zoo.latency_sample/v1\",\"sequence\":{d},\"byte\":{d},\"read_to_flush_us\":{d}}}\n",
-            .{ emitted + 1, byte, elapsed_us },
+            "{{\"type\":\"tui_zoo.latency_sample/v1\",\"sequence\":{d},\"byte\":{d},\"read_to_flush_us\":{d},\"read_monotonic_ns\":{d},\"flush_monotonic_ns\":{d}}}\n",
+            .{ emitted + 1, byte, elapsed_us, started.raw.nanoseconds, finished.raw.nanoseconds },
         );
         try metrics.flush();
         emitted += 1;
