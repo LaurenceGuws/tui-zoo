@@ -89,3 +89,13 @@ These let an independent host correlate the response with its own observations.
 A benchmark host must independently
 measure compositor delivery and presentation; TUI Zoo does not claim
 input-to-photon latency.
+
+Cursor movement can be isolated from cell writes with `cells --cursor-only`.
+It primes the requested viewport once with ASCII `x` in color 7, then each
+operation only moves a visible steady block cursor. Geometry, seed, pacing,
+dose and synchronized-output controls remain the same. Priming precedes measured
+producer frames; host samples may include that startup cost. The mode pressures
+presentation of retained content with tiny protocol input, not glyph shaping or
+bulk parser throughput. Background and Unicode glyph modes are rejected.
+The default cursor policy is restored on exit, and the existing fixed-frame
+ASCII cell oracle covers the unchanged primed viewport.

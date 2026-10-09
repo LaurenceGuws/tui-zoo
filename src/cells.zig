@@ -34,6 +34,7 @@ const Config = struct {
     dose: u32 = 1,
     glyph_set: GlyphSet = .printable,
     background: bool = false,
+    cursor_only: bool = false,
     synchronized_output: bool = false,
     alternate_screen: bool = true,
 };
@@ -95,8 +96,9 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     terminal.installStopHandlers();
     try enterScreen(out, config.alternate_screen);
     var screen_active = true;
-    defer if (screen_active) leaveScreen(out, config.alternate_screen, false);
+    defer if (screen_active) leaveScreen(out, config.alternate_screen, false, config.cursor_only);
 
+    if (config.cursor_only) try primeCursor(out, size, oracle_cells, config.synchronized_output);
     var pacer = try Pacer.init(init.io, config.fps);
     const started = std.Io.Clock.Timestamp.now(init.io, .awake);
     var prng = std.Random.DefaultPrng.init(config.seed);
@@ -122,18 +124,22 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         while (operation < config.dose) : (operation += 1) {
             const row = 1 + random.uintLessThan(u16, size.rows);
             const col = 1 + random.uintLessThan(u16, columns);
-            const color = 16 + random.uintLessThan(u8, 216);
-            const glyph = randomGlyph(random, config.glyph_set);
-            try out.print("\x1b[{d};{d}H\x1b[38;5;{d}m", .{ row, col, color });
-            if (config.background) try out.print("\x1b[48;5;{d}m", .{16 + random.uintLessThan(u8, 216)});
-            try out.writeAll(glyph);
-            if (oracle_cells) |cells| {
-                const index = (@as(usize, row) - 1) * @as(usize, size.cols) + (@as(usize, col) - 1);
-                cells[index] = .{ .glyph = glyph[0], .color = color, .occupied = true };
+            if (config.cursor_only) {
+                try out.print("\x1b[{d};{d}H", .{ row, col });
+            } else {
+                const color = 16 + random.uintLessThan(u8, 216);
+                const glyph = randomGlyph(random, config.glyph_set);
+                try out.print("\x1b[{d};{d}H\x1b[38;5;{d}m", .{ row, col, color });
+                if (config.background) try out.print("\x1b[48;5;{d}m", .{16 + random.uintLessThan(u8, 216)});
+                try out.writeAll(glyph);
+                if (oracle_cells) |cells| {
+                    const index = (@as(usize, row) - 1) * @as(usize, size.cols) + (@as(usize, col) - 1);
+                    cells[index] = .{ .glyph = glyph[0], .color = color, .occupied = true };
+                }
             }
             writes += 1;
         }
-        try out.writeAll("\x1b[0m");
+        if (!config.cursor_only) try out.writeAll("\x1b[0m");
         if (config.synchronized_output) try out.writeAll(sync_end);
         try out.flush();
         const frame_done = std.Io.Clock.Timestamp.now(init.io, .awake);
@@ -143,7 +149,7 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         frames += 1;
     }
 
-    leaveScreen(out, config.alternate_screen, config.oracle);
+    leaveScreen(out, config.alternate_screen, config.oracle, config.cursor_only);
     screen_active = false;
     input.restore();
     const finished = std.Io.Clock.Timestamp.now(init.io, .awake);
@@ -201,6 +207,8 @@ fn parseArgs(args: []const []const u8) !Config {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
             config.glyph_set = std.meta.stringToEnum(GlyphSet, args[i]) orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--cursor-only")) {
+            config.cursor_only = true;
         } else if (std.mem.eql(u8, arg, "--background")) {
             config.background = true;
         } else if (std.mem.eql(u8, arg, "--synchronized-output")) {
@@ -209,6 +217,7 @@ fn parseArgs(args: []const []const u8) !Config {
             config.alternate_screen = false;
         } else return error.InvalidArgs;
     }
+    if (config.cursor_only and (config.background or config.glyph_set == .unicode)) return error.InvalidArgs;
     if (config.oracle and (config.frames == null or config.duration_ms != null or config.alternate_screen or config.background or config.glyph_set == .unicode))
         return error.InvalidArgs;
     if (config.duration_ms == null and config.frames == null) config.duration_ms = default_duration_ms;
@@ -253,7 +262,22 @@ fn enterScreen(out: anytype, alternate: bool) !void {
     try out.flush();
 }
 
-fn leaveScreen(out: anytype, alternate: bool, preserve_final: bool) void {
+/// Primes immutable ASCII cells once; measured frames then move a steady block cursor only.
+fn primeCursor(out: anytype, size: terminal.Size, oracle: ?[]OracleCell, synchronized: bool) !void {
+    if (synchronized) try out.writeAll(sync_begin);
+    try out.writeAll("\x1b[38;5;7m");
+    for (0..size.rows) |row| {
+        try out.print("\x1b[{d};1H", .{row + 1});
+        for (0..size.cols) |_| try out.writeByte('x');
+    }
+    if (oracle) |cells| @memset(cells, .{ .glyph = 'x', .color = 7, .occupied = true });
+    try out.writeAll("\x1b[0m\x1b[2 q\x1b[?25h");
+    if (synchronized) try out.writeAll(sync_end);
+    try out.flush();
+}
+
+fn leaveScreen(out: anytype, alternate: bool, preserve_final: bool, cursor_only: bool) void {
+    if (cursor_only) out.writeAll("\x1b[0 q") catch {};
     if (preserve_final) {
         std.debug.assert(!alternate);
         out.writeAll("\x1b[0m\x1b[?25h") catch {};
@@ -301,13 +325,13 @@ fn report(config: Config, size: terminal.Size, frames: u64, writes: u64, elapsed
     if (oracle_digest) |digest| {
         const hex = digestHex(&digest);
         std.debug.print(
-            "{{\"type\":\"tui_zoo.cells/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"background\":{},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d},\"oracle_sha256\":\"{s}\"}}\n",
-            .{ config.dose, @tagName(config.glyph_set), config.background, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100), &hex },
+            "{{\"type\":\"tui_zoo.cells/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"background\":{},\"cursor_only\":{},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d},\"oracle_sha256\":\"{s}\"}}\n",
+            .{ config.dose, @tagName(config.glyph_set), config.background, config.cursor_only, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100), &hex },
         );
     } else {
         std.debug.print(
-            "{{\"type\":\"tui_zoo.cells/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"background\":{},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
-            .{ config.dose, @tagName(config.glyph_set), config.background, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
+            "{{\"type\":\"tui_zoo.cells/v1\",\"dose\":{d},\"glyph_set\":\"{s}\",\"background\":{},\"cursor_only\":{},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"cols\":{d},\"rows\":{d},\"synchronized_output\":{},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
+            .{ config.dose, @tagName(config.glyph_set), config.background, config.cursor_only, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
         );
     }
 }
@@ -333,6 +357,7 @@ fn usage() void {
         \\  --seed N             deterministic PRNG seed
         \\  --glyph-set NAME      printable (default), alnum, or unicode
         \\  --background         random 256-color backgrounds (default off)
+        \\  --cursor-only        prime ASCII viewport, then move steady block cursor without cell writes
         \\  --cols N --rows N    fixed geometry
         \\  --synchronized-output bracket each frame with CSI ?2026
         \\  --no-alt-screen      render in current screen
@@ -426,4 +451,24 @@ test "Unicode clusters and their right-edge margin are bounded" {
     try std.testing.expect(config.background);
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--oracle", "--frames", "1", "--no-alt-screen", "--glyph-set", "unicode" }));
     try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--oracle", "--frames", "1", "--no-alt-screen", "--background" }));
+}
+
+test "cursor-only mode rejects changing-cell flags and retains the final-cell oracle" {
+    const config = try parseArgs(&.{ "--cursor-only", "--oracle", "--frames", "2", "--no-alt-screen" });
+    try std.testing.expect(config.cursor_only and config.oracle);
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--cursor-only", "--background" }));
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--cursor-only", "--glyph-set", "unicode" }));
+}
+
+test "cursor priming fills an edge viewport once and restores ordinary cursor policy" {
+    var buffer: [256]u8 = undefined;
+    var out = std.Io.Writer.fixed(&buffer);
+    var oracle: [1]OracleCell = undefined;
+    try primeCursor(&out, .{ .cols = 1, .rows = 1 }, &oracle, true);
+    try std.testing.expectEqualStrings("\x1b[?2026h\x1b[38;5;7m\x1b[1;1Hx\x1b[0m\x1b[2 q\x1b[?25h\x1b[?2026l", out.buffered());
+    try std.testing.expectEqual(@as(u8, 'x'), oracle[0].glyph);
+    try std.testing.expectEqual(@as(u8, 7), oracle[0].color);
+    try std.testing.expect(oracle[0].occupied);
+    leaveScreen(&out, false, true, true);
+    try std.testing.expect(std.mem.endsWith(u8, out.buffered(), "\x1b[0 q\x1b[0m\x1b[?25h"));
 }
