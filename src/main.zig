@@ -11,6 +11,19 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, args[1], "build-info")) {
+        if (args.len != 2) {
+            std.debug.print("{{\"error\":\"invalid_args\",\"workload\":\"build-info\"}}\n", .{});
+            std.process.exit(2);
+        }
+        const builtin = @import("builtin");
+        std.debug.print(
+            "{{\"type\":\"tui_zoo.build/v1\",\"zig_version\":\"{s}\",\"optimize\":\"{s}\",\"zig_backend\":\"{s}\"}}\n",
+            .{ builtin.zig_version_string, @tagName(builtin.optimize), @tagName(builtin.zig_backend) },
+        );
+        return;
+    }
+
     if (std.mem.eql(u8, args[1], "rain")) {
         rain.run(init, args[2..]) catch |err| switch (err) {
             error.HelpRequested => {},
@@ -53,9 +66,10 @@ pub fn main(init: std.process.Init) !void {
 
 fn usage() void {
     std.debug.print(
-        \\usage: tui-zoo <workload> [options]
+        \\usage: tui-zoo <command> [options]
         \\
-        \\workloads:
+        \\commands:
+        \\  build-info compiler and optimization identity as JSON on stderr
         \\  rain    deterministic visual rain with explicit frame cadence
         \\  latency immediate one-cell reaction to each input byte
         \\  cells   deterministic random-cell dose curve for parser/render pressure

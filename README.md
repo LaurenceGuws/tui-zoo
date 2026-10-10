@@ -99,3 +99,8 @@ presentation of retained content with tiny protocol input, not glyph shaping or
 bulk parser throughput. Background and Unicode glyph modes are rejected.
 The default cursor policy is restored on exit, and the existing fixed-frame
 ASCII cell oracle covers the unchanged primed viewport.
+
+`tui-zoo build-info` writes one JSON record to stderr with the exact compiler
+version, optimization mode and compiler backend of that executable. It writes
+no terminal bytes. Record this alongside the binary hash when comparing canary
+results: producer generation cost can otherwise masquerade as a consumer limit.
