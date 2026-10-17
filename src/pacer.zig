@@ -1,11 +1,13 @@
 const std = @import("std");
 
+/// Paces against monotonic absolute deadlines; late frames skip slots instead of drifting.
 pub const Pacer = struct {
     io: std.Io,
     interval: std.Io.Duration,
     next: std.Io.Clock.Timestamp,
     skipped_slots: u64 = 0,
 
+    /// Starts the first deadline one frame interval after the current awake-clock time.
     pub fn init(io: std.Io, fps: f64) !Pacer {
         const interval_ns = try intervalNanoseconds(fps);
         const interval = std.Io.Duration.fromNanoseconds(interval_ns);
@@ -18,6 +20,8 @@ pub const Pacer = struct {
         };
     }
 
+    /// Waits for a deadline and returns its nonnegative lateness in nanoseconds.
+    /// Skipped cadence slots are counted, never replayed as catch-up frames.
     pub fn wait(self: *Pacer) !u64 {
         var now = std.Io.Clock.Timestamp.now(self.io, .awake);
         const interval = std.Io.Clock.Duration{ .raw = self.interval, .clock = .awake };
@@ -39,6 +43,7 @@ pub const Pacer = struct {
     }
 };
 
+/// Converts a finite rate in (0, 1000] Hz to a rounded positive interval.
 pub fn intervalNanoseconds(fps: f64) !i64 {
     if (!std.math.isFinite(fps) or fps <= 0.0 or fps > 1000.0) return error.InvalidRate;
     return @intFromFloat(@round(@as(f64, @floatFromInt(std.time.ns_per_s)) / fps));

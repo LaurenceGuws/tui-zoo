@@ -23,6 +23,21 @@ Build:
 
     zig build -Doptimize=ReleaseSafe
 
+Validation (official Zig version from `.zigversion`, plus `zig-audit` ruleset 3):
+
+    zig fmt --check build.zig src
+    zig build test
+    zig build audit
+    zig build check
+
+`check` compiles the workload, runs its unit tests, and checks all maintained
+`build.zig` and `src/*.zig` source with the strict schema-2 audit policy.
+`test` remains available independently. Terminal write/flush and normal cleanup
+failures terminate with an error rather than producing a successful workload
+receipt. On error exits, synchronized-output closure and screen/termios restoration
+are attempted; any cleanup failure is reported on stderr because a broken output
+stream cannot guarantee delivery of the terminal restoration bytes.
+
 Run at upstream Rain's nominal 30 ms tick:
 
     zig build run -- rain

@@ -3,6 +3,7 @@ const latency = @import("latency.zig");
 const cells = @import("cells.zig");
 const rain = @import("rain.zig");
 
+/// Dispatches a bounded, self-contained terminal workload without host-specific integration.
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
@@ -80,7 +81,7 @@ fn usage() void {
 }
 
 test {
-    _ = latency;
-    _ = cells;
-    _ = rain;
+    std.testing.refAllDecls(latency);
+    std.testing.refAllDecls(cells);
+    std.testing.refAllDecls(rain);
 }

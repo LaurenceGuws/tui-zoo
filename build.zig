@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Builds the standalone workload executable and its independent source/test gates.
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -25,5 +26,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    b.step("test", "Run unit tests").dependOn(&b.addRunArtifact(tests).step);
+    const run_tests = b.addRunArtifact(tests);
+    b.step("test", "Run unit tests").dependOn(&run_tests.step);
+
+    const audit_command = b.addSystemCommand(&.{ "zig-audit", "check" });
+    audit_command.setCwd(b.path("."));
+    const audit = b.step("audit", "Check maintained Zig source with ruleset 3");
+    audit.dependOn(&audit_command.step);
+
+    const check = b.step("check", "Compile, run unit tests, and audit Zig source");
+    check.dependOn(&exe.step);
+    check.dependOn(&run_tests.step);
+    check.dependOn(audit);
 }

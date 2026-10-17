@@ -11,8 +11,6 @@ const max_dimension: u16 = 4096;
 const max_cells: usize = 1024 * 1024;
 const max_dose: u32 = 65_536;
 const sample_capacity = 4096;
-const sync_begin = "\x1b[?2026h";
-const sync_end = "\x1b[?2026l";
 const printable_glyphs = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 const unicode_glyphs = [_][]const u8{ "Ω", "Ж", "λ", "─", "é", "界", "語", "🙂", "🚀" };
 const alnum_glyphs = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -74,6 +72,8 @@ const Samples = struct {
     }
 };
 
+/// Emits seeded, fixed-dose terminal cell operations and a producer-only JSON receipt.
+/// Frame counts describe successful stdout flushes, not display presentation.
 pub fn run(init: std.process.Init, args: []const []const u8) !void {
     const config = try parseArgs(args);
     const size = resolvedSize(config);
@@ -91,12 +91,12 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     var stdout_buffer: [64 * 1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const out = &stdout_writer.interface;
-    var input = terminal.Input.enter();
-    defer input.restore();
     terminal.installStopHandlers();
-    try enterScreen(out, config.alternate_screen);
+    var input = terminal.Input.enter();
+    defer input.restore() catch |err| terminal.reportCleanupError("termios", @errorName(err));
     var screen_active = true;
-    defer if (screen_active) leaveScreen(out, config.alternate_screen, false, config.cursor_only);
+    defer if (screen_active) leaveScreen(out, config.alternate_screen, false, config.cursor_only) catch |err| terminal.reportCleanupError("screen", @errorName(err));
+    try enterScreen(out, config.alternate_screen);
 
     if (config.cursor_only) try primeCursor(out, size, oracle_cells, config.synchronized_output);
     var pacer = try Pacer.init(init.io, config.fps);
@@ -119,7 +119,9 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         if (input.wantsQuit()) break;
 
         const frame_started = std.Io.Clock.Timestamp.now(init.io, .awake);
-        if (config.synchronized_output) try out.writeAll(sync_begin);
+        var frame = terminal.Frame{ .out = out, .synchronized = config.synchronized_output };
+        defer frame.abort();
+        try frame.begin();
         var operation: u32 = 0;
         while (operation < config.dose) : (operation += 1) {
             const row = 1 + random.uintLessThan(u16, size.rows);
@@ -140,8 +142,7 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
             writes += 1;
         }
         if (!config.cursor_only) try out.writeAll("\x1b[0m");
-        if (config.synchronized_output) try out.writeAll(sync_end);
-        try out.flush();
+        try frame.finish();
         const frame_done = std.Io.Clock.Timestamp.now(init.io, .awake);
         const build_ns = frame_started.durationTo(frame_done).raw.nanoseconds;
         frame_samples.add(if (build_ns > 0) @intCast(build_ns) else 0);
@@ -149,9 +150,9 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         frames += 1;
     }
 
-    leaveScreen(out, config.alternate_screen, config.oracle, config.cursor_only);
+    try leaveScreen(out, config.alternate_screen, config.oracle, config.cursor_only);
     screen_active = false;
-    input.restore();
+    try input.restore();
     const finished = std.Io.Clock.Timestamp.now(init.io, .awake);
     const elapsed_i = started.durationTo(finished).raw.nanoseconds;
     const elapsed_ns: u64 = if (elapsed_i > 0) @intCast(elapsed_i) else 0;
@@ -256,15 +257,17 @@ fn cellCount(cols: u16, rows: u16) !usize {
     return count;
 }
 
-fn enterScreen(out: anytype, alternate: bool) !void {
+fn enterScreen(out: *std.Io.Writer, alternate: bool) !void {
     if (alternate) try out.writeAll("\x1b[?1049h");
     try out.writeAll("\x1b[?25l\x1b[0m\x1b[2J\x1b[H");
     try out.flush();
 }
 
 /// Primes immutable ASCII cells once; measured frames then move a steady block cursor only.
-fn primeCursor(out: anytype, size: terminal.Size, oracle: ?[]OracleCell, synchronized: bool) !void {
-    if (synchronized) try out.writeAll(sync_begin);
+fn primeCursor(out: *std.Io.Writer, size: terminal.Size, oracle: ?[]OracleCell, synchronized: bool) !void {
+    var frame = terminal.Frame{ .out = out, .synchronized = synchronized };
+    defer frame.abort();
+    try frame.begin();
     try out.writeAll("\x1b[38;5;7m");
     for (0..size.rows) |row| {
         try out.print("\x1b[{d};1H", .{row + 1});
@@ -272,20 +275,19 @@ fn primeCursor(out: anytype, size: terminal.Size, oracle: ?[]OracleCell, synchro
     }
     if (oracle) |cells| @memset(cells, .{ .glyph = 'x', .color = 7, .occupied = true });
     try out.writeAll("\x1b[0m\x1b[2 q\x1b[?25h");
-    if (synchronized) try out.writeAll(sync_end);
-    try out.flush();
+    try frame.finish();
 }
 
-fn leaveScreen(out: anytype, alternate: bool, preserve_final: bool, cursor_only: bool) void {
-    if (cursor_only) out.writeAll("\x1b[0 q") catch {};
+fn leaveScreen(out: *std.Io.Writer, alternate: bool, preserve_final: bool, cursor_only: bool) !void {
+    if (cursor_only) try out.writeAll("\x1b[0 q");
     if (preserve_final) {
         std.debug.assert(!alternate);
-        out.writeAll("\x1b[0m\x1b[?25h") catch {};
+        try out.writeAll("\x1b[0m\x1b[?25h");
     } else {
-        out.writeAll("\x1b[0m\x1b[2J\x1b[H\x1b[?25h") catch {};
-        if (alternate) out.writeAll("\x1b[?1049l") catch {};
+        try out.writeAll("\x1b[0m\x1b[2J\x1b[H\x1b[?25h");
+        if (alternate) try out.writeAll("\x1b[?1049l");
     }
-    out.flush() catch {};
+    try out.flush();
 }
 
 fn oracleDigest(size: terminal.Size, cells: []const OracleCell) [32]u8 {
@@ -469,6 +471,6 @@ test "cursor priming fills an edge viewport once and restores ordinary cursor po
     try std.testing.expectEqual(@as(u8, 'x'), oracle[0].glyph);
     try std.testing.expectEqual(@as(u8, 7), oracle[0].color);
     try std.testing.expect(oracle[0].occupied);
-    leaveScreen(&out, false, true, true);
+    try leaveScreen(&out, false, true, true);
     try std.testing.expect(std.mem.endsWith(u8, out.buffered(), "\x1b[0 q\x1b[0m\x1b[?25h"));
 }

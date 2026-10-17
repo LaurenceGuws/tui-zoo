@@ -2,19 +2,8 @@ const std = @import("std");
 const posix = std.posix;
 const terminal = @import("terminal.zig");
 
-pub const Error = error{
-    HelpRequested,
-    InvalidArgs,
-    Stdout,
-    Stderr,
-    Poll,
-    Read,
-};
-
 const default_samples: u16 = 32;
 const maximum_samples: u16 = 4096;
-const sync_begin = "\x1b[?2026h";
-const sync_end = "\x1b[?2026l";
 
 const Config = struct {
     samples: u16 = default_samples,
@@ -22,6 +11,8 @@ const Config = struct {
     synchronized_output: bool = false,
 };
 
+/// Measures the successful read-to-flush interval for each input marker mutation.
+/// Does not infer compositor delivery or presentation latency.
 pub fn run(init: std.process.Init, args: []const []const u8) !void {
     const config = parseArgs(args) catch |err| switch (err) {
         error.HelpRequested => {
@@ -39,13 +30,13 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     const metrics = &stderr_writer.interface;
 
-    var input = terminal.Input.enter();
-    defer input.restore();
     terminal.installStopHandlers();
+    var input = terminal.Input.enter();
+    defer input.restore() catch |err| terminal.reportCleanupError("termios", @errorName(err));
 
-    try enterScreen(out, config.alternate_screen);
     var screen_active = true;
-    defer if (screen_active) leaveScreen(out, config.alternate_screen);
+    defer if (screen_active) leaveScreen(out, config.alternate_screen) catch |err| terminal.reportCleanupError("screen", @errorName(err));
+    try enterScreen(out, config.alternate_screen);
 
     try metrics.print(
         "{{\"type\":\"tui_zoo.latency_ready/v1\",\"samples\":{d},\"synchronized_output\":{}}}\n",
@@ -76,9 +67,9 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         emitted += 1;
     }
 
-    leaveScreen(out, config.alternate_screen);
+    try leaveScreen(out, config.alternate_screen);
     screen_active = false;
-    input.restore();
+    try input.restore();
 
     std.mem.sort(u64, reaction_us[0..emitted], {}, struct {
         fn lessThan(_: void, a: u64, b: u64) bool {
@@ -136,24 +127,25 @@ fn readOneByte() !?u8 {
     return byte[0];
 }
 
-fn emitMarker(out: anytype, marker: bool, synchronized_output: bool) !void {
-    if (synchronized_output) try out.writeAll(sync_begin);
+fn emitMarker(out: *std.Io.Writer, marker: bool, synchronized_output: bool) !void {
+    var frame = terminal.Frame{ .out = out, .synchronized = synchronized_output };
+    defer frame.abort();
+    try frame.begin();
     try out.writeAll("\x1b[1;1H");
     try out.writeByte(if (marker) '1' else '0');
-    if (synchronized_output) try out.writeAll(sync_end);
-    try out.flush();
+    try frame.finish();
 }
 
-fn enterScreen(out: anytype, alternate: bool) !void {
+fn enterScreen(out: *std.Io.Writer, alternate: bool) !void {
     if (alternate) try out.writeAll("\x1b[?1049h");
     try out.writeAll("\x1b[?25l\x1b[2J\x1b[H0");
     try out.flush();
 }
 
-fn leaveScreen(out: anytype, alternate: bool) void {
-    out.writeAll("\x1b[0m\x1b[?25h") catch {};
-    if (alternate) out.writeAll("\x1b[?1049l") catch {};
-    out.flush() catch {};
+fn leaveScreen(out: *std.Io.Writer, alternate: bool) !void {
+    try out.writeAll("\x1b[0m\x1b[?25h");
+    if (alternate) try out.writeAll("\x1b[?1049l");
+    try out.flush();
 }
 
 fn percentile(sorted: []const u64, pct: u8) u64 {

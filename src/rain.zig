@@ -23,9 +23,6 @@ const Config = struct {
     assert_min_fps: ?f64 = null,
 };
 
-const synchronized_output_begin = "\x1b[?2026h";
-const synchronized_output_end = "\x1b[?2026l";
-
 const Drop = struct {
     col: u16,
     row: u16,
@@ -136,6 +133,8 @@ const State = struct {
     }
 };
 
+/// Advances seeded rain simulation and emits diffed, paced terminal frames.
+/// Producer timing is reported separately from terminal presentation.
 pub fn run(init: std.process.Init, args: []const []const u8) !void {
     const config = try parseArgs(args);
     const allocator = std.heap.page_allocator;
@@ -149,13 +148,13 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const out = &stdout_writer.interface;
 
-    var input = terminal.Input.enter();
-    defer input.restore();
     terminal.installStopHandlers();
+    var input = terminal.Input.enter();
+    defer input.restore() catch |err| terminal.reportCleanupError("termios", @errorName(err));
 
-    try enterScreen(out, config.alternate_screen);
     var screen_active = true;
-    defer if (screen_active) leaveScreen(out, config.alternate_screen);
+    defer if (screen_active) leaveScreen(out, config.alternate_screen) catch |err| terminal.reportCleanupError("screen", @errorName(err));
+    try enterScreen(out, config.alternate_screen);
 
     var pacer = try Pacer.init(init.io, config.fps);
     const started = std.Io.Clock.Timestamp.now(init.io, .awake);
@@ -202,9 +201,9 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         emitted += 1;
     }
 
-    leaveScreen(out, config.alternate_screen);
+    try leaveScreen(out, config.alternate_screen);
     screen_active = false;
-    input.restore();
+    try input.restore();
 
     const finished = std.Io.Clock.Timestamp.now(init.io, .awake);
     const elapsed_ns_i = started.durationTo(finished).raw.nanoseconds;
@@ -335,40 +334,37 @@ fn liveSize(config: Config) ?terminal.Size {
     };
 }
 
-fn enterScreen(out: anytype, alternate: bool) !void {
+fn enterScreen(out: *std.Io.Writer, alternate: bool) !void {
     if (alternate) try out.writeAll("\x1b[?1049h");
     try out.writeAll("\x1b[?25l\x1b[0m\x1b[2J\x1b[H");
     try out.flush();
 }
 
-fn leaveScreen(out: anytype, alternate: bool) void {
-    out.writeAll("\x1b[0m\x1b[2J\x1b[H\x1b[?25h") catch {};
-    if (alternate) out.writeAll("\x1b[?1049l") catch {};
-    out.flush() catch {};
+fn leaveScreen(out: *std.Io.Writer, alternate: bool) !void {
+    try out.writeAll("\x1b[0m\x1b[2J\x1b[H\x1b[?25h");
+    if (alternate) try out.writeAll("\x1b[?1049l");
+    try out.flush();
 }
 
 fn emitFrame(
-    out: anytype,
+    out: *std.Io.Writer,
     previous: []const Cell,
     current: []const Cell,
     cols: u16,
     clear_before: bool,
     synchronized_output: bool,
 ) !u64 {
-    if (synchronized_output) try out.writeAll(synchronized_output_begin);
-    errdefer if (synchronized_output) {
-        out.writeAll(synchronized_output_end) catch {};
-        out.flush() catch {};
-    };
+    var frame = terminal.Frame{ .out = out, .synchronized = synchronized_output };
+    defer frame.abort();
+    try frame.begin();
 
     if (clear_before) try out.writeAll("\x1b[0m\x1b[2J\x1b[H");
     const changed = try emitDiff(out, previous, current, cols);
-    if (synchronized_output) try out.writeAll(synchronized_output_end);
-    try out.flush();
+    try frame.finish();
     return changed;
 }
 
-fn emitDiff(out: anytype, previous: []const Cell, current: []const Cell, cols: u16) !u64 {
+fn emitDiff(out: *std.Io.Writer, previous: []const Cell, current: []const Cell, cols: u16) !u64 {
     std.debug.assert(previous.len == current.len);
     const width: usize = cols;
     var changed: u64 = 0;
