@@ -32,7 +32,8 @@ Validation (official Zig version from `.zigversion`, plus `zig-audit` ruleset 3)
 
 `check` compiles the workload, runs its unit tests, and checks all maintained
 `build.zig` and `src/*.zig` source with the strict schema-2 audit policy.
-`test` remains available independently. Terminal write/flush and normal cleanup
+`test` remains available independently. Python 3 is used only by the emitted-byte
+and PTY cleanup proofs in `tests/unicode.py`; the executable has no Python dependency. Terminal write/flush and normal cleanup
 failures terminate with an error rather than producing a successful workload
 receipt. On error exits, synchronized-output closure and screen/termios restoration
 are attempted; any cleanup failure is reported on stderr because a broken output
@@ -81,6 +82,80 @@ and rendering pressure canaries, with no claim of Unicode screen-state validatio
 The command and receipt are now named `cells` (`tui_zoo.cells/v1`); the default
 seed and ASCII stdout stream are unchanged. The oracle hash namespace is now
 `tui-zoo.cells.oracle/v1`. No legacy command alias is retained.
+
+
+## Unicode torture track
+
+`unicode` separates text cases, traversal, and foreground/background variation.
+It shares Cells' pacing, terminal I/O, signal cleanup and producer timing lane.
+It does not inspect or configure the terminal under test.
+
+    tui-zoo unicode --case mixed --dose 256 --fps 240 --duration-ms 10000 --synchronized-output
+
+Each operation fills one nominal **two-cell slot**. ASCII writes two narrow
+characters, CJK writes one wide character, and combining/emoji cases write
+complete sequences. Odd-width grids leave the final column unused. Slots keep
+the intended changed area equal across cases and keep wide text away from
+accidental wrapping. Dose counts slot writes, including repeated writes to a slot;
+it does not count unique dirty cells or match the old one-cell ASCII dose.
+
+| Case | Pressure |
+| --- | --- |
+| `ascii` | Two ASCII letters/digits; control case |
+| `utf8` | Two narrow non-ASCII characters, including two/three-byte UTF-8 |
+| `combining` | Two combining clusters, ranging up to 24 codepoints each |
+| `wide` | CJK/Korean/Japanese wide text, including supplementary CJK |
+| `emoji` | Emoji, skin tone, flags, keycap and ZWJ sequences |
+| `scripts` | Armenian, Georgian, Ethiopic, Thai, Hebrew, Arabic and Devanagari font-coverage pressure |
+| `presentation` | Text/emoji selectors alternating nominal one-cell-plus-space and two-cell forms |
+| `churn` | Cycle all 4,096 CJK scalars U+4E00..U+5DFF before repeating |
+| `mixed` | Sample all seven non-ASCII cases, including churn; default |
+
+`--pattern random` edits seeded random slots. `--pattern sequential` sweeps slots
+in row-major order continuously across frames. Coordinates, text, foreground and
+background use independent random streams. Changing case preserves coordinates;
+changing traversal preserves text; toggling colors preserves both.
+
+Colors are fixed by default: indexed foreground 7 and the terminal's default
+background. Add `--foreground`, `--background`, or both independently. A useful
+matrix holds seed, geometry, pattern, dose, cadence and duration constant:
+
+    tui-zoo unicode --case ascii --pattern random --dose 1024 --fps 240 --duration-ms 8000 --cols 384 --rows 83 --synchronized-output
+    tui-zoo unicode --case utf8  --pattern random --dose 1024 --fps 240 --duration-ms 8000 --cols 384 --rows 83 --synchronized-output
+
+Repeat each with `--background`; add `--foreground` to both when variable text
+color is the intended test. Then repeat for combining/wide/emoji/scripts/
+presentation/churn/mixed and the sequential pattern. The terminal/benchmark host
+owns fresh-process ordering, CPU/memory observation and visual qualification.
+TUI Zoo supplies one named case per process rather than silently blending scores.
+
+For deterministic input canaries:
+
+    tui-zoo unicode --case mixed --frames 64 --dose 256 --seed 7 --cols 80 --rows 24 --digest --synchronized-output
+
+`--digest` requires exact `--frames` without a duration limit. It adds independent
+position and length-delimited text SHA-256 hashes. Background/foreground toggles
+must preserve both hashes. Digests are off by default; leave them off for timing
+to avoid measuring hashing overhead. They validate emitted input, not terminal
+screen state.
+
+The `tui_zoo.unicode/v1` stderr receipt records case, pattern, seed, color flags,
+slot writes, payload bytes, codepoints, nominal cells, complete semantic-frame
+bytes, geometry, target/producer cadence, skipped slots and bounded timing samples.
+Frame bytes include cursor/style/text output, frame SGR reset and optional
+synchronized-output markers; startup/cleanup bytes are excluded.
+
+Widths are nominal expectations. Ambiguous-width policy, Unicode support, font
+coverage and emoji presentation differ between terminals. `scripts` pressures
+coverage but cannot guarantee a fallback with every font. These cases include
+shaping/rasterization as well as decoding; they do not isolate decoder CPU alone.
+A host must qualify rendering before interpreting performance. Producer FPS is
+not displayed FPS, and the receipt makes no Unicode cell-state oracle claim.
+
+Common cadence/dose/geometry controls match Cells. Unicode geometry requires at
+least two columns, dimensions at most 4096 and at most 1,048,576 cells. Fixed
+frame counts are bounded to 1,000,000; dose is at most 65,536. Geometry is fixed
+at startup. Restart the case after resizing when making controlled comparisons.
 
 ## Provenance
 

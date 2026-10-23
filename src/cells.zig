@@ -1,6 +1,7 @@
 const std = @import("std");
 const terminal = @import("terminal.zig");
 const Pacer = @import("pacer.zig").Pacer;
+const unicode = @import("unicode.zig");
 
 const default_fps = 240.0;
 const default_duration_ms: u64 = 8000;
@@ -35,6 +36,7 @@ const Config = struct {
     cursor_only: bool = false,
     synchronized_output: bool = false,
     alternate_screen: bool = true,
+    unicode: ?unicode.Config = null,
 };
 
 const OracleCell = struct {
@@ -75,10 +77,19 @@ const Samples = struct {
 /// Emits seeded, fixed-dose terminal cell operations and a producer-only JSON receipt.
 /// Frame counts describe successful stdout flushes, not display presentation.
 pub fn run(init: std.process.Init, args: []const []const u8) !void {
-    const config = try parseArgs(args);
+    try runConfig(init, try parseArgs(args));
+}
+
+/// Runs equal-slot Unicode cases through the same pacing, I/O and cleanup lane.
+pub fn runUnicode(init: std.process.Init, args: []const []const u8) !void {
+    try runConfig(init, try parseArgsMode(args, true));
+}
+
+fn runConfig(init: std.process.Init, config: Config) !void {
     const size = resolvedSize(config);
     const cells_count = try cellCount(size.cols, size.rows);
-    const columns = try writeColumns(size.cols, config.glyph_set);
+    const columns = if (config.unicode == null) try writeColumns(size.cols, config.glyph_set) else 0;
+    var unicode_plan: ?unicode.Planner = if (config.unicode) |settings| try unicode.Planner.init(config.seed, size, settings) else null;
     const allocator = std.heap.page_allocator;
     var oracle_cells: ?[]OracleCell = null;
     if (config.oracle) {
@@ -103,6 +114,12 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     const started = std.Io.Clock.Timestamp.now(init.io, .awake);
     var prng = std.Random.DefaultPrng.init(config.seed);
     const random = prng.random();
+    var digest: ?unicode.Digest = if (config.unicode != null and config.unicode.?.digest) unicode.Digest.init(size) else null;
+    // Unicode caps frames at 1,000,000 (timed runs: 60 s at <=1000 Hz).
+    // With dose <=65536 and bounded operations, every receipt counter fits u64.
+    var payload_bytes: u64 = 0;
+    var scalar_count: u64 = 0;
+    var frame_bytes: u64 = 0;
     var frames: u64 = 0;
     var writes: u64 = 0;
     var frame_samples = Samples{};
@@ -122,8 +139,18 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         var frame = terminal.Frame{ .out = out, .synchronized = config.synchronized_output };
         defer frame.abort();
         try frame.begin();
+        if (config.unicode) |settings| frame_bytes += try unicode.beginFrame(out, settings, config.background);
         var operation: u32 = 0;
         while (operation < config.dose) : (operation += 1) {
+            if (unicode_plan) |*plan| {
+                const op = plan.next();
+                frame_bytes += try unicode.emit(out, op, plan.config.foreground, config.background);
+                payload_bytes += op.text.len;
+                scalar_count += op.scalars;
+                if (digest) |*value| value.record(op);
+                writes += 1;
+                continue;
+            }
             const row = 1 + random.uintLessThan(u16, size.rows);
             const col = 1 + random.uintLessThan(u16, columns);
             if (config.cursor_only) {
@@ -143,6 +170,7 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
         }
         if (!config.cursor_only) try out.writeAll("\x1b[0m");
         try frame.finish();
+        if (config.unicode != null) frame_bytes += 4 + @as(u64, if (config.synchronized_output) 16 else 0);
         const frame_done = std.Io.Clock.Timestamp.now(init.io, .awake);
         const build_ns = frame_started.durationTo(frame_done).raw.nanoseconds;
         frame_samples.add(if (build_ns > 0) @intCast(build_ns) else 0);
@@ -157,16 +185,24 @@ pub fn run(init: std.process.Init, args: []const []const u8) !void {
     const elapsed_i = started.durationTo(finished).raw.nanoseconds;
     const elapsed_ns: u64 = if (elapsed_i > 0) @intCast(elapsed_i) else 0;
     const oracle_digest = if (oracle_cells) |cells| oracleDigest(size, cells) else null;
-    report(config, size, frames, writes, elapsed_ns, pacer.skipped_slots, &frame_samples, &late_samples, oracle_digest);
+    if (config.unicode != null)
+        reportUnicode(config, size, frames, writes, payload_bytes, scalar_count, frame_bytes, elapsed_ns, pacer.skipped_slots, &frame_samples, &late_samples, &digest)
+    else
+        report(config, size, frames, writes, elapsed_ns, pacer.skipped_slots, &frame_samples, &late_samples, oracle_digest);
 }
 
 fn parseArgs(args: []const []const u8) !Config {
+    return parseArgsMode(args, false);
+}
+
+fn parseArgsMode(args: []const []const u8, unicode_mode: bool) !Config {
     var config = Config{};
+    if (unicode_mode) config.unicode = .{};
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            usage();
+            if (unicode_mode) unicodeUsage() else usage();
             return error.HelpRequested;
         } else if (std.mem.eql(u8, arg, "--fps")) {
             i += 1;
@@ -186,6 +222,7 @@ fn parseArgs(args: []const []const u8) !Config {
             if (frames == 0) return error.InvalidArgs;
             config.frames = frames;
         } else if (std.mem.eql(u8, arg, "--oracle")) {
+            if (unicode_mode) return error.InvalidArgs;
             config.oracle = true;
         } else if (std.mem.eql(u8, arg, "--seed")) {
             i += 1;
@@ -205,11 +242,29 @@ fn parseArgs(args: []const []const u8) !Config {
             config.dose = std.fmt.parseUnsigned(u32, args[i], 10) catch return error.InvalidArgs;
             if (config.dose == 0 or config.dose > max_dose) return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--glyph-set")) {
+            if (unicode_mode) return error.InvalidArgs;
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
             config.glyph_set = std.meta.stringToEnum(GlyphSet, args[i]) orelse return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--cursor-only")) {
+            if (unicode_mode) return error.InvalidArgs;
             config.cursor_only = true;
+        } else if (std.mem.eql(u8, arg, "--case")) {
+            if (!unicode_mode) return error.InvalidArgs;
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            config.unicode.?.case = std.meta.stringToEnum(unicode.Case, args[i]) orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--pattern")) {
+            if (!unicode_mode) return error.InvalidArgs;
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            config.unicode.?.pattern = std.meta.stringToEnum(unicode.Pattern, args[i]) orelse return error.InvalidArgs;
+        } else if (std.mem.eql(u8, arg, "--foreground")) {
+            if (!unicode_mode) return error.InvalidArgs;
+            config.unicode.?.foreground = true;
+        } else if (std.mem.eql(u8, arg, "--digest")) {
+            if (!unicode_mode) return error.InvalidArgs;
+            config.unicode.?.digest = true;
         } else if (std.mem.eql(u8, arg, "--background")) {
             config.background = true;
         } else if (std.mem.eql(u8, arg, "--synchronized-output")) {
@@ -217,6 +272,11 @@ fn parseArgs(args: []const []const u8) !Config {
         } else if (std.mem.eql(u8, arg, "--no-alt-screen")) {
             config.alternate_screen = false;
         } else return error.InvalidArgs;
+    }
+    if (config.unicode) |settings| {
+        if (config.frames) |limit| if (limit > 1_000_000) return error.InvalidArgs;
+        if (settings.digest and (config.frames == null or config.duration_ms != null)) return error.InvalidArgs;
+        if (config.cols) |cols| if (cols < 2) return error.InvalidArgs;
     }
     if (config.cursor_only and (config.background or config.glyph_set == .unicode)) return error.InvalidArgs;
     if (config.oracle and (config.frames == null or config.duration_ms != null or config.alternate_screen or config.background or config.glyph_set == .unicode))
@@ -336,6 +396,60 @@ fn report(config: Config, size: terminal.Size, frames: u64, writes: u64, elapsed
             .{ config.dose, @tagName(config.glyph_set), config.background, config.cursor_only, config.fps, fps, frames, skipped, writes, size.cols, size.rows, config.synchronized_output, percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
         );
     }
+}
+
+fn reportUnicode(config: Config, size: terminal.Size, frames: u64, writes: u64, payload_bytes: u64, scalar_count: u64, frame_bytes: u64, elapsed_ns: u64, skipped: u64, frame_samples: *const Samples, late_samples: *const Samples, digest: *?unicode.Digest) void {
+    const settings = config.unicode.?;
+    var frame_scratch: [sample_capacity]u64 = undefined;
+    var late_scratch: [sample_capacity]u64 = undefined;
+    const f = frame_samples.sorted(&frame_scratch);
+    const l = late_samples.sorted(&late_scratch);
+    const fps = if (elapsed_ns == 0) 0.0 else @as(f64, @floatFromInt(frames)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
+    var positions_text: [66]u8 = undefined;
+    var payload_text: [66]u8 = undefined;
+    if (digest.*) |*value| {
+        var position_hash: [32]u8 = undefined;
+        var text_hash: [32]u8 = undefined;
+        value.positions.final(&position_hash);
+        value.text.final(&text_hash);
+        positions_text[0] = '"';
+        positions_text[65] = '"';
+        positions_text[1..65].* = digestHex(&position_hash);
+        payload_text[0] = '"';
+        payload_text[65] = '"';
+        payload_text[1..65].* = digestHex(&text_hash);
+    }
+    std.debug.print(
+        "{{\"type\":\"tui_zoo.unicode/v1\",\"case\":\"{s}\",\"pattern\":\"{s}\",\"seed\":{d},\"dose\":{d},\"foreground\":{},\"background\":{},\"target_fps\":{d:.6},\"actual_fps\":{d:.3},\"frames\":{d},\"skipped_slots\":{d},\"writes\":{d},\"payload_bytes\":{d},\"codepoints\":{d},\"nominal_cells\":{d},\"frame_bytes\":{d},\"cols\":{d},\"rows\":{d},\"slot_width\":2,\"unused_columns\":{d},\"synchronized_output\":{},\"digest\":{},\"positions_sha256\":{s},\"text_sha256\":{s},\"frame_p50_us\":{d},\"frame_p95_us\":{d},\"frame_p99_us\":{d},\"frame_max_us\":{d},\"late_p50_us\":{d},\"late_p95_us\":{d},\"late_p99_us\":{d},\"late_max_us\":{d}}}\n",
+        .{ @tagName(settings.case), @tagName(settings.pattern), config.seed, config.dose, settings.foreground, config.background, config.fps, fps, frames, skipped, writes, payload_bytes, scalar_count, writes * 2, frame_bytes, size.cols, size.rows, size.cols % 2, config.synchronized_output, settings.digest, if (settings.digest) &positions_text else "null", if (settings.digest) &payload_text else "null", percentileUs(f, 50), percentileUs(f, 95), percentileUs(f, 99), percentileUs(f, 100), percentileUs(l, 50), percentileUs(l, 95), percentileUs(l, 99), percentileUs(l, 100) },
+    );
+}
+
+fn unicodeUsage() void {
+    std.debug.print(
+        \\usage: tui-zoo unicode [options]
+        \\
+        \\Two-cell-slot Unicode pressure with independent position/text/color streams.
+        \\Compare the same seed, geometry, dose and case with background off/on.
+        \\
+        \\  --case NAME          ascii, utf8, combining, wide, emoji, scripts, presentation, churn, mixed (default)
+        \\  --pattern NAME       random (default) or sequential
+        \\  --foreground         independently varying indexed foreground (default fixed color 7)
+        \\  --background         independently varying indexed background (default terminal background)
+        \\  --dose N             two-cell slot writes per frame (1..65536, default 1)
+        \\  --fps N              target semantic-frame cadence (max 1000, default 240)
+        \\  --duration-ms N      stop after duration (max 60000, default 8000)
+        \\  --frames N           exact frame limit (1..1000000)
+        \\  --digest             optional input hashes; requires --frames without --duration-ms
+        \\  --seed N             deterministic seed, also recorded in receipt
+        \\  --cols N --rows N    geometry fixed at startup (minimum 2 columns)
+        \\  --synchronized-output bracket each frame with CSI ?2026
+        \\  --no-alt-screen      render in current screen
+        \\
+        \\Cells are nominal: glyph widths/fallback depend on the terminal and fonts.
+        \\Digests describe emitted input, never displayed cells or frames.
+        \\
+    , .{});
 }
 
 fn percentileUs(sorted: []const u64, pct: u8) u64 {
@@ -473,4 +587,19 @@ test "cursor priming fills an edge viewport once and restores ordinary cursor po
     try std.testing.expect(oracle[0].occupied);
     try leaveScreen(&out, false, true, true);
     try std.testing.expect(std.mem.endsWith(u8, out.buffered(), "\x1b[0 q\x1b[0m\x1b[?25h"));
+}
+
+test "Unicode CLI separates cases from legacy cells and bounds receipts" {
+    const config = try parseArgsMode(&.{ "--case", "combining", "--pattern", "sequential", "--frames", "2", "--digest", "--background" }, true);
+    try std.testing.expectEqual(unicode.Case.combining, config.unicode.?.case);
+    try std.testing.expectEqual(unicode.Pattern.sequential, config.unicode.?.pattern);
+    try std.testing.expect(config.background and config.unicode.?.digest and !config.unicode.?.foreground);
+    const invalid = [_][]const []const u8{
+        &.{ "--case", "unknown" },                                &.{"--case"},                &.{ "--pattern", "unknown" },   &.{"--pattern"},
+        &.{"--oracle"},                                           &.{"--cursor-only"},         &.{ "--glyph-set", "unicode" }, &.{"--digest"},
+        &.{ "--digest", "--frames", "2", "--duration-ms", "20" }, &.{ "--frames", "1000001" }, &.{ "--cols", "1" },
+    };
+    for (invalid) |args| try std.testing.expectError(error.InvalidArgs, parseArgsMode(args, true));
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{ "--case", "ascii" }));
+    try std.testing.expectError(error.InvalidArgs, parseArgs(&.{"--foreground"}));
 }

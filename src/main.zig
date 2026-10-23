@@ -49,6 +49,18 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, args[1], "unicode")) {
+        cells.runUnicode(init, args[2..]) catch |err| switch (err) {
+            error.HelpRequested => {},
+            error.InvalidArgs => {
+                std.debug.print("{{\"error\":\"invalid_args\",\"workload\":\"unicode\"}}\n", .{});
+                std.process.exit(2);
+            },
+            else => return err,
+        };
+        return;
+    }
+
     if (std.mem.eql(u8, args[1], "latency")) {
         latency.run(init, args[2..]) catch |err| switch (err) {
             error.HelpRequested => {},
@@ -74,6 +86,7 @@ fn usage() void {
         \\  rain    deterministic visual rain with explicit frame cadence
         \\  latency immediate one-cell reaction to each input byte
         \\  cells   deterministic random-cell dose curve for parser/render pressure
+        \\  unicode equal-slot Unicode torture cases with orthogonal colors/patterns
         \\
         \\run tui-zoo <workload> --help for workload options.
         \\

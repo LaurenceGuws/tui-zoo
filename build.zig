@@ -27,7 +27,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_tests = b.addRunArtifact(tests);
-    b.step("test", "Run unit tests").dependOn(&run_tests.step);
+    const test_step = b.step("test", "Run unit and emitted-byte CLI proofs");
+    test_step.dependOn(&run_tests.step);
+    const cli_tests = b.addSystemCommand(&.{"python3"});
+    cli_tests.addFileArg(b.path("tests/unicode.py"));
+    cli_tests.addFileArg(exe.getEmittedBin());
+    test_step.dependOn(&cli_tests.step);
 
     const audit_command = b.addSystemCommand(&.{ "zig-audit", "check" });
     audit_command.setCwd(b.path("."));
@@ -37,5 +42,6 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Compile, run unit tests, and audit Zig source");
     check.dependOn(&exe.step);
     check.dependOn(&run_tests.step);
+    check.dependOn(&cli_tests.step);
     check.dependOn(audit);
 }
