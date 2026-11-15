@@ -116,6 +116,7 @@ it does not count unique dirty cells or match the old one-cell ASCII dose.
 | `arabic-join` | Arabic joining pairs, lam–alef and combining vowel/shadda marks |
 | `hangul-nfc` | Eight precomposed Hangul syllables; normalization control |
 | `hangul-nfd` | The same syllables as decomposed L/V(/T) Jamo grapheme clusters |
+| `world-scripts` | Tamil, Thai, Khmer, Sinhala, Ethiopic, pointed Hebrew, cuneiform and Egyptian hieroglyph coverage |
 | `mixed` | Sample all seven non-ASCII cases, including churn; default |
 
 `--pattern random` edits seeded random slots. `--pattern sequential` sweeps slots
@@ -133,7 +134,7 @@ working-set control, although repeated writes may also change how much screen
 content is dirty. Both cases are deliberately excluded from `mixed`, preserving
 existing deterministic streams for historical comparisons.
 
-The five opt-in joining cases are also excluded from `mixed`. In particular,
+The opt-in joining and world-script cases are also excluded from `mixed`. In particular,
 `hangul-nfc` and `hangul-nfd` use matching sample indices and identical
 position/color streams. Their canonical text normalizes to exactly the same
 eight Hangul syllables, while NFD exercises multi-scalar grapheme assembly.
@@ -144,6 +145,7 @@ mechanisms, but cannot guarantee font coverage, ligature policy or width.
     tui-zoo unicode --case hangul-nfc --pattern sequential --dose 1024 --fps 120 --duration-ms 8000 --cols 384 --rows 83
     tui-zoo unicode --case hangul-nfd --pattern sequential --dose 1024 --fps 120 --duration-ms 8000 --cols 384 --rows 83
     tui-zoo unicode --case emoji-zwj --pattern random --dose 128 --fps 120 --duration-ms 8000 --cols 384 --rows 83
+    tui-zoo unicode --case world-scripts --pattern sequential --dose 128 --fps 120 --duration-ms 8000 --cols 384 --rows 83
 
     tui-zoo unicode --case grapheme-churn --pattern sequential --frames 32 --dose 4096 --fps 30 --seed 7 --cols 384 --rows 83 --digest --synchronized-output
 
@@ -157,7 +159,7 @@ matrix holds seed, geometry, pattern, dose, cadence and duration constant:
 Repeat each with `--background`; add `--foreground` to both when variable text
 color is the intended test. Then repeat for combining/wide/emoji/scripts/
 presentation/churn/grapheme-churn/grapheme-repeat/emoji-zwj/indic-conjunct/
-arabic-join/hangul-nfc/hangul-nfd/mixed and the sequential
+arabic-join/hangul-nfc/hangul-nfd/world-scripts/mixed and the sequential
 pattern. The terminal/benchmark host
 owns fresh-process ordering, CPU/memory observation and visual qualification.
 TUI Zoo supplies one named case per process rather than silently blending scores.

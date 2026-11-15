@@ -20,6 +20,7 @@ pub const Case = enum {
     @"arabic-join",
     @"hangul-nfc",
     @"hangul-nfd",
+    @"world-scripts",
     mixed,
 };
 /// Selects random slot edits or a continuous row-major slot sweep.
@@ -115,6 +116,21 @@ const hangul_nfd = [_]Sample{
     sample("린"),
 };
 
+// Deliberately outside the fixed desktop fallback recipe: these independent
+// scripts exercise on-demand font selection and combining/complex shaping.
+// Each value occupies a nominal two-cell slot, with a trailing space when
+// the visible cluster is expected to occupy one terminal cell.
+const world_scripts = [_]Sample{
+    sample("கி "), // Tamil combining vowel
+    sample("ก้ "), // Thai tone mark
+    sample("ក្រ "), // Khmer coeng conjunct
+    sample("කි "), // Sinhala dependent vowel
+    sample("ሀለ"), // Ethiopic
+    sample("שׁ "), // Hebrew point
+    sample("𒀀 "), // Cuneiform
+    sample("𓀀 "), // Egyptian hieroglyph
+};
+
 // Two single-cell clusters per slot. The 112-mark alphabet has enough ordered
 // triples for 262,144 distinct scalar sequences without any retained corpus.
 const grapheme_churn_count: u32 = 262_144;
@@ -147,6 +163,7 @@ fn corpus(case: Case) []const Sample {
         .@"arabic-join" => &arabic_join,
         .@"hangul-nfc" => &hangul_nfc,
         .@"hangul-nfd" => &hangul_nfd,
+        .@"world-scripts" => &world_scripts,
         .mixed, .churn, .@"grapheme-churn", .@"grapheme-repeat" => &.{},
     };
 }
@@ -319,6 +336,13 @@ test "Unicode joining corpora hold deliberate fixed samples" {
     for (hangul_nfc, hangul_nfd) |composed, decomposed| {
         try std.testing.expectEqual(@as(u16, 1), composed.scalars);
         try std.testing.expect(decomposed.scalars == 2 or decomposed.scalars == 3);
+    }
+}
+
+test "world scripts are a bounded opt-in fixed eight-sample corpus" {
+    try std.testing.expectEqual(@as(usize, 8), corpus(.@"world-scripts").len);
+    for (world_scripts) |value| {
+        try std.testing.expect(value.scalars > 0 and value.scalars <= 6);
     }
 }
 

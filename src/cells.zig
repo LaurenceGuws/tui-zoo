@@ -435,7 +435,7 @@ fn unicodeUsage() void {
         \\  --case NAME          ascii, utf8, combining, wide, emoji, scripts,
         \\                       presentation, churn, grapheme-churn, grapheme-repeat,
         \\                       emoji-zwj, indic-conjunct, arabic-join, hangul-nfc,
-        \\                       hangul-nfd, mixed (default)
+        \\                       hangul-nfd, world-scripts, mixed (default)
         \\  --pattern NAME       random (default) or sequential
         \\  --foreground         independently varying indexed foreground (default fixed color 7)
         \\  --background         independently varying indexed background (default terminal background)
