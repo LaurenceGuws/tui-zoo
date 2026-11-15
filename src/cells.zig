@@ -432,7 +432,10 @@ fn unicodeUsage() void {
         \\Two-cell-slot Unicode pressure with independent position/text/color streams.
         \\Compare the same seed, geometry, dose and case with background off/on.
         \\
-        \\  --case NAME          ascii, utf8, combining, wide, emoji, scripts, presentation, churn, grapheme-churn, grapheme-repeat, mixed (default)
+        \\  --case NAME          ascii, utf8, combining, wide, emoji, scripts,
+        \\                       presentation, churn, grapheme-churn, grapheme-repeat,
+        \\                       emoji-zwj, indic-conjunct, arabic-join, hangul-nfc,
+        \\                       hangul-nfd, mixed (default)
         \\  --pattern NAME       random (default) or sequential
         \\  --foreground         independently varying indexed foreground (default fixed color 7)
         \\  --background         independently varying indexed background (default terminal background)
@@ -596,6 +599,8 @@ test "Unicode CLI separates cases from legacy cells and bounds receipts" {
     try std.testing.expectEqual(unicode.Case.@"grapheme-churn", churn_config.unicode.?.case);
     const repeat_config = try parseArgsMode(&.{ "--case", "grapheme-repeat", "--frames", "1" }, true);
     try std.testing.expectEqual(unicode.Case.@"grapheme-repeat", repeat_config.unicode.?.case);
+    const jamo_config = try parseArgsMode(&.{ "--case", "hangul-nfd", "--frames", "1" }, true);
+    try std.testing.expectEqual(unicode.Case.@"hangul-nfd", jamo_config.unicode.?.case);
     try std.testing.expectEqual(unicode.Pattern.sequential, config.unicode.?.pattern);
     try std.testing.expect(config.background and config.unicode.?.digest and !config.unicode.?.foreground);
     const invalid = [_][]const []const u8{

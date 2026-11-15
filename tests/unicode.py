@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Independent emitted-byte, receipt, orthogonality and PTY cleanup proofs."""
 from pathlib import Path
-import subprocess,json,re,hashlib,struct,os,pty,termios,copy,select,time,signal,sys,tempfile,fcntl
+import subprocess,json,re,hashlib,struct,os,pty,termios,copy,select,time,signal,sys,tempfile,fcntl,unicodedata
 scratch=tempfile.TemporaryDirectory(prefix="tui-zoo-unicode-")
 G=Path(scratch.name)
 BIN=Path(sys.argv[1]).resolve()
 D=G/"cli";D.mkdir()
-cases=["ascii","utf8","combining","wide","emoji","scripts","presentation","churn","grapheme-churn","grapheme-repeat","mixed"]
+cases=["ascii","utf8","combining","wide","emoji","scripts","presentation","churn","grapheme-churn","grapheme-repeat","emoji-zwj","indic-conjunct","arabic-join","hangul-nfc","hangul-nfd","mixed"]
 results=[];position_groups={}
 sgr=re.compile(rb"\x1b\[[0-9;]*m")
 cup=re.compile(rb"\x1b\[(\d+);(\d+)H(?:\x1b\[[0-9;]*m)*")
@@ -56,6 +56,11 @@ pinned_text_hashes={
  "churn":"6b76f9bca9bd3a97b065f42338db33138a651cdbf11ab4c4cca74952d892d896",
  "grapheme-churn":"dc044f68d8d358b1e6fdb954fb8a1635f33bf32d51743d6278e7da5af1f17142",
  "grapheme-repeat":"2b7322aac54de9898997c8a06663d90dd4b53f4468685fb807da4cd62124c599",
+ "emoji-zwj":"c51c813fe5c72def9fe4d0575e4d4f93069eeb3ee06b353e307d0e56c0c952ca",
+ "indic-conjunct":"ff6c03fef1d45bfdb84010ee6c6322d8d8a6632208d7de823370f51036be89d0",
+ "arabic-join":"67acc9f7da05dae3dfbcb9d63bd6e272e9aaff26fcc8783997ce7e12fc5e2857",
+ "hangul-nfc":"afbd5889e14358e3b2fde0ea3a9dc8e8cf7ae58d8a908524a274a99b71c3ada9",
+ "hangul-nfd":"cc756eb6a12bb7a61bc2c870a81ac610bead8f66032da3d407ae192c2c431533",
 }
 for case,expected in pinned_text_hashes.items():
  receipt=next(entry["receipt"] for entry in results if entry["label"]==f"{case}-random-00")
@@ -87,6 +92,25 @@ for m in cup.finditer(repeat.stdout):
 assert len(repeated_clusters)==512 and len(set(repeated_clusters))==64
 assert repeated_clusters[:64]==clusters[:64]
 assert repeated_clusters[64:128]==repeated_clusters[:64]
+# The two Hangul cases select the same syllables in identical order. NFC and
+# decomposed-Jamo inputs must be visibly equivalent by normalization, while
+# stressing different UTF-8 and grapheme-joining work. This is input proof only.
+def payload_texts(stream):
+ return [stream[m.end():stream.index(b"\x1b",m.end())].decode("utf-8") for m in cup.finditer(stream)]
+hangul_args=["--frames","1","--dose","256","--fps","1000","--seed","7","--cols","80","--rows","24"]
+nfc=payload_texts(run(["unicode","--case","hangul-nfc",*hangul_args],"hangul-nfc-256").stdout)
+nfd=payload_texts(run(["unicode","--case","hangul-nfd",*hangul_args],"hangul-nfd-256").stdout)
+assert len(nfc)==len(nfd)==256
+assert len(set(nfc))==len(set(nfd))==8
+assert all(len(a)==1 and len(b) in (2,3) and a!=b and unicodedata.normalize("NFC",b)==a for a,b in zip(nfc,nfd))
+# Isolated joining corpora contain the intended Unicode mechanisms in actual
+# emitted bytes; never treat these checks as font/shaping/screen-state oracles.
+for case,expected in [("emoji-zwj",8),("indic-conjunct",8),("arabic-join",8)]:
+ texts=payload_texts(run(["unicode","--case",case,*hangul_args],case+"-256").stdout)
+ assert len(texts)==256 and len(set(texts))==expected
+ if case=="emoji-zwj":assert all("\u200d" in t for t in texts)
+ if case=="indic-conjunct":assert all("\u094d" in t or "\u09cd" in t for t in texts)
+ if case=="arabic-join":assert all(any("\u0600"<=c<="\u06ff" for c in t) for t in texts)
 invalid=[["--case","nope"],["--pattern","nope"],["--digest"],["--cols","1"],["--frames","0"],["--frames","1000001"],["--dose","0"],["--dose","65537"],["--fps","nan"],["--fps","1001"],["--oracle"],["--cursor-only"],["--glyph-set","unicode"],["--case"],["--pattern"],["--frames","2","--digest","--duration-ms","1"]]
 for n,args in enumerate(invalid):
  p=run(["unicode",*args],f"invalid{n}",False)
@@ -120,4 +144,4 @@ os.close(master);os.close(slave)
 (D/"signal.stdout").write_bytes(output)
 manifest=dict(ok=True,binary_sha=hashlib.sha256(BIN.read_bytes()).hexdigest(),matrix_runs=len(results),matrix=results,invalid_cases=len(invalid),signal_receipt=receipt,limits="Input/counters/determinism/cleanup proofs. No Unicode screen-state or performance ranking claim.")
 (G/"cli-proof.json").write_text(json.dumps(manifest,indent=2))
-print(json.dumps(dict(ok=True,matrix_runs=len(results),invalid=len(invalid),churn_unique=4096,signal_cleanup=True)))
+print(json.dumps(dict(ok=True,matrix_runs=len(results),invalid=len(invalid),churn_unique=4096,hangul_equivalence=True,joining_corpora=True,signal_cleanup=True)))

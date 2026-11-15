@@ -4,7 +4,24 @@ const std = @import("std");
 const terminal = @import("terminal.zig");
 
 /// Names independent text-pressure cases; mixed preserves its seven-case corpus.
-pub const Case = enum { ascii, utf8, combining, wide, emoji, scripts, presentation, churn, @"grapheme-churn", @"grapheme-repeat", mixed };
+pub const Case = enum {
+    ascii,
+    utf8,
+    combining,
+    wide,
+    emoji,
+    scripts,
+    presentation,
+    churn,
+    @"grapheme-churn",
+    @"grapheme-repeat",
+    @"emoji-zwj",
+    @"indic-conjunct",
+    @"arabic-join",
+    @"hangul-nfc",
+    @"hangul-nfd",
+    mixed,
+};
 /// Selects random slot edits or a continuous row-major slot sweep.
 pub const Pattern = enum { random, sequential };
 /// Changes colors independently from positions and text.
@@ -43,6 +60,60 @@ const wide = [_]Sample{ sample("界"), sample("語"), sample("漢"), sample("字
 const emoji = [_]Sample{ sample("🙂"), sample("🚀"), sample("👩‍💻"), sample("👨‍👩‍👧‍👦"), sample("👍🏽"), sample("🇿🇦"), sample("1️⃣"), sample("🏳️‍🌈") };
 const scripts = [_]Sample{ sample("Աբ"), sample("აბ"), sample("ሀለ"), sample("กข"), sample("אב"), sample("بج"), sample("कख"), sample("αЖ") };
 const presentation = [_]Sample{ sample("♥︎ "), sample("♥️"), sample("☀︎ "), sample("☀️"), sample("✈︎ "), sample("✈️"), sample("©︎ "), sample("©️") };
+// Dedicated grapheme/shaping probes. Each sample occupies a nominal two-cell
+// slot, but font coverage and width policy remain terminal qualifications.
+const emoji_zwj = [_]Sample{
+    sample("👩‍💻"),
+    sample("👨‍🔬"),
+    sample("🧑‍🚀"),
+    sample("👩‍⚕️"),
+    sample("👨‍👩‍👧‍👦"),
+    sample("🏳️‍🌈"),
+    sample("🏴‍☠️"),
+    sample("❤️‍🔥"),
+};
+const indic_conjunct = [_]Sample{
+    sample("क्ष "),
+    sample("क्‍ष "),
+    sample("त्र "),
+    sample("श्र "),
+    sample("स्त "),
+    sample("प्रि "),
+    sample("ক্ষ "),
+    sample("ক্ত "),
+};
+const arabic_join = [_]Sample{
+    sample("لا"),
+    sample("لب"),
+    sample("بج"),
+    sample("مش"),
+    sample("سَ "),
+    sample("بّ "),
+    sample("عِ "),
+    sample("آم"),
+};
+// The two corpora use matching indices for canonically equivalent syllables.
+// Hangul Jamo clusters exert joining pressure absent from precomposed syllables.
+const hangul_nfc = [_]Sample{
+    sample("가"),
+    sample("난"),
+    sample("한"),
+    sample("영"),
+    sample("물"),
+    sample("서"),
+    sample("글"),
+    sample("린"),
+};
+const hangul_nfd = [_]Sample{
+    sample("가"),
+    sample("난"),
+    sample("한"),
+    sample("영"),
+    sample("물"),
+    sample("서"),
+    sample("글"),
+    sample("린"),
+};
 
 // Two single-cell clusters per slot. The 112-mark alphabet has enough ordered
 // triples for 262,144 distinct scalar sequences without any retained corpus.
@@ -71,6 +142,11 @@ fn corpus(case: Case) []const Sample {
         .emoji => &emoji,
         .scripts => &scripts,
         .presentation => &presentation,
+        .@"emoji-zwj" => &emoji_zwj,
+        .@"indic-conjunct" => &indic_conjunct,
+        .@"arabic-join" => &arabic_join,
+        .@"hangul-nfc" => &hangul_nfc,
+        .@"hangul-nfd" => &hangul_nfd,
         .mixed, .churn, .@"grapheme-churn", .@"grapheme-repeat" => &.{},
     };
 }
@@ -231,6 +307,19 @@ test "Unicode corpus has valid bounded text and intentional 24-scalar clusters" 
         }
     }
     try std.testing.expectEqual(@as(u16, 48), combining[7].scalars);
+}
+
+test "Unicode joining corpora hold deliberate fixed samples" {
+    inline for (.{ .@"emoji-zwj", .@"indic-conjunct", .@"arabic-join", .@"hangul-nfc", .@"hangul-nfd" }) |case| {
+        const values = corpus(case);
+        try std.testing.expectEqual(@as(usize, 8), values.len);
+        for (values) |value| try std.testing.expect(value.scalars > 0);
+    }
+    for (emoji_zwj) |value| try std.testing.expect(std.mem.indexOf(u8, value.bytes, "\u{200d}") != null);
+    for (hangul_nfc, hangul_nfd) |composed, decomposed| {
+        try std.testing.expectEqual(@as(u16, 1), composed.scalars);
+        try std.testing.expect(decomposed.scalars == 2 or decomposed.scalars == 3);
+    }
 }
 
 test "Unicode slots cover odd geometry without wrapping and sequentially repeat" {
