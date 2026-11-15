@@ -110,6 +110,7 @@ it does not count unique dirty cells or match the old one-cell ASCII dose.
 | `presentation` | Text/emoji selectors alternating nominal one-cell-plus-space and two-cell forms |
 | `churn` | Cycle all 4,096 CJK scalars U+4E00..U+5DFF before repeating |
 | `grapheme-churn` | Cycle 262,144 four-scalar grapheme clusters (base + three combining marks) before repeating |
+| `grapheme-repeat` | Same two-cluster slot size and marks as grapheme churn, but repeat 64 distinct clusters |
 | `mixed` | Sample all seven non-ASCII cases, including churn; default |
 
 `--pattern random` edits seeded random slots. `--pattern sequential` sweeps slots
@@ -120,8 +121,12 @@ changing traversal preserves text; toggling colors preserves both.
 `grapheme-churn` emits two distinct single-cell clusters per slot, generated
 without a resident string corpus. Each cluster is a Latin base followed by three
 combining marks in U+0300..U+036F; the complete 262,144-cluster cycle spans
-131,072 slot writes. It is opt-in and is deliberately excluded from `mixed`,
-preserving existing deterministic streams for historical comparisons.
+131,072 slot writes. Its opt-in `grapheme-repeat` partner cycles the first
+64 generated clusters every 32 writes, keeping the same 14 UTF-8 bytes, eight
+scalars and nominal two cells per operation. This supplies a matched warm
+working-set control, although repeated writes may also change how much screen
+content is dirty. Both cases are deliberately excluded from `mixed`, preserving
+existing deterministic streams for historical comparisons.
 
     tui-zoo unicode --case grapheme-churn --pattern sequential --frames 32 --dose 4096 --fps 30 --seed 7 --cols 384 --rows 83 --digest --synchronized-output
 
@@ -134,7 +139,8 @@ matrix holds seed, geometry, pattern, dose, cadence and duration constant:
 
 Repeat each with `--background`; add `--foreground` to both when variable text
 color is the intended test. Then repeat for combining/wide/emoji/scripts/
-presentation/churn/grapheme-churn/mixed and the sequential pattern. The terminal/benchmark host
+presentation/churn/grapheme-churn/grapheme-repeat/mixed and the sequential
+pattern. The terminal/benchmark host
 owns fresh-process ordering, CPU/memory observation and visual qualification.
 TUI Zoo supplies one named case per process rather than silently blending scores.
 

@@ -6,7 +6,7 @@ scratch=tempfile.TemporaryDirectory(prefix="tui-zoo-unicode-")
 G=Path(scratch.name)
 BIN=Path(sys.argv[1]).resolve()
 D=G/"cli";D.mkdir()
-cases=["ascii","utf8","combining","wide","emoji","scripts","presentation","churn","grapheme-churn","mixed"]
+cases=["ascii","utf8","combining","wide","emoji","scripts","presentation","churn","grapheme-churn","grapheme-repeat","mixed"]
 results=[];position_groups={}
 sgr=re.compile(rb"\x1b\[[0-9;]*m")
 cup=re.compile(rb"\x1b\[(\d+);(\d+)H(?:\x1b\[[0-9;]*m)*")
@@ -55,6 +55,7 @@ pinned_text_hashes={
  "mixed":"15d3a32a4abf00589c10f8b6d84d3e1084b642fcdb8cfc1f7706a7b2910d51d9",
  "churn":"6b76f9bca9bd3a97b065f42338db33138a651cdbf11ab4c4cca74952d892d896",
  "grapheme-churn":"dc044f68d8d358b1e6fdb954fb8a1635f33bf32d51743d6278e7da5af1f17142",
+ "grapheme-repeat":"2b7322aac54de9898997c8a06663d90dd4b53f4468685fb807da4cd62124c599",
 }
 for case,expected in pinned_text_hashes.items():
  receipt=next(entry["receipt"] for entry in results if entry["label"]==f"{case}-random-00")
@@ -76,6 +77,16 @@ for m in cup.finditer(p.stdout):
  assert len(text)==8 and text[0]=="a" and text[4]=="b"
  clusters.extend([text[:4],text[4:]])
 assert len(clusters)==512 and len(set(clusters))==512
+# Same encoded dose as churn, but a tiny corpus repeating every 32 slot writes.
+repeat=run(["unicode","--case","grapheme-repeat","--frames","2","--dose","128","--fps","1000","--seed","7","--cols","80","--rows","24"],"grapheme-repeat256")
+repeated_clusters=[]
+for m in cup.finditer(repeat.stdout):
+ text=repeat.stdout[m.end():repeat.stdout.index(b"\x1b",m.end())].decode()
+ assert len(text)==8 and text[0]=="a" and text[4]=="b"
+ repeated_clusters.extend([text[:4],text[4:]])
+assert len(repeated_clusters)==512 and len(set(repeated_clusters))==64
+assert repeated_clusters[:64]==clusters[:64]
+assert repeated_clusters[64:128]==repeated_clusters[:64]
 invalid=[["--case","nope"],["--pattern","nope"],["--digest"],["--cols","1"],["--frames","0"],["--frames","1000001"],["--dose","0"],["--dose","65537"],["--fps","nan"],["--fps","1001"],["--oracle"],["--cursor-only"],["--glyph-set","unicode"],["--case"],["--pattern"],["--frames","2","--digest","--duration-ms","1"]]
 for n,args in enumerate(invalid):
  p=run(["unicode",*args],f"invalid{n}",False)

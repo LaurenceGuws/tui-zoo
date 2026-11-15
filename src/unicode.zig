@@ -4,7 +4,7 @@ const std = @import("std");
 const terminal = @import("terminal.zig");
 
 /// Names independent text-pressure cases; mixed preserves its seven-case corpus.
-pub const Case = enum { ascii, utf8, combining, wide, emoji, scripts, presentation, churn, @"grapheme-churn", mixed };
+pub const Case = enum { ascii, utf8, combining, wide, emoji, scripts, presentation, churn, @"grapheme-churn", @"grapheme-repeat", mixed };
 /// Selects random slot edits or a continuous row-major slot sweep.
 pub const Pattern = enum { random, sequential };
 /// Changes colors independently from positions and text.
@@ -48,6 +48,7 @@ const presentation = [_]Sample{ sample("♥︎ "), sample("♥️"), sample("☀
 // triples for 262,144 distinct scalar sequences without any retained corpus.
 const grapheme_churn_count: u32 = 262_144;
 const grapheme_mark_count: u32 = 0x70;
+const grapheme_repeat_count: u32 = 64;
 
 fn encodeChurnCluster(bytes: []u8, base: u8, index: u32) void {
     std.debug.assert(bytes.len == 7 and index < grapheme_churn_count);
@@ -70,7 +71,7 @@ fn corpus(case: Case) []const Sample {
         .emoji => &emoji,
         .scripts => &scripts,
         .presentation => &presentation,
-        .mixed, .churn, .@"grapheme-churn" => &.{},
+        .mixed, .churn, .@"grapheme-churn", .@"grapheme-repeat" => &.{},
     };
 }
 
@@ -96,6 +97,8 @@ pub const Planner = struct {
     next_slot: usize = 0,
     next_glyph: u16,
     next_grapheme: u32,
+    grapheme_base: u32,
+    grapheme_repeat_offset: u32 = 0,
     generated: [14]u8 = undefined,
 
     /// Validates two-column slots without requiring storage proportional to the grid.
@@ -112,6 +115,7 @@ pub const Planner = struct {
             .slot_count = @as(usize, slots) * size.rows,
             .next_glyph = @intCast(seed % 4096),
             .next_grapheme = @intCast(seed % grapheme_churn_count),
+            .grapheme_base = @intCast(seed % grapheme_churn_count),
         };
     }
 
@@ -135,11 +139,15 @@ pub const Planner = struct {
                 @intCast(0x80 | (cp & 0x3f)),
             };
             break :blk Sample{ .bytes = self.generated[0..3], .scalars = 1 };
-        } else if (case == .@"grapheme-churn") blk: {
-            const first = self.next_grapheme;
+        } else if (case == .@"grapheme-churn" or case == .@"grapheme-repeat") blk: {
+            const first = if (case == .@"grapheme-churn") self.next_grapheme else (self.grapheme_base + self.grapheme_repeat_offset) % grapheme_churn_count;
             encodeChurnCluster(self.generated[0..7], 'a', first);
             encodeChurnCluster(self.generated[7..14], 'b', (first + 1) % grapheme_churn_count);
-            self.next_grapheme = (first + 2) % grapheme_churn_count;
+            if (case == .@"grapheme-churn") {
+                self.next_grapheme = (first + 2) % grapheme_churn_count;
+            } else {
+                self.grapheme_repeat_offset = (self.grapheme_repeat_offset + 2) % grapheme_repeat_count;
+            }
             break :blk Sample{ .bytes = &self.generated, .scalars = 8 };
         } else blk: {
             const values = corpus(case);
@@ -333,4 +341,19 @@ test "Unicode grapheme churn preserves text across patterns and color settings" 
         try std.testing.expectEqual(a.foreground, b.foreground);
         try std.testing.expectEqual(a.background, b.background);
     }
+}
+
+test "Unicode grapheme repeat matches churn for 64 clusters then repeats exactly" {
+    var churn = try Planner.init(20261115, .{ .cols = 80, .rows = 24 }, .{ .case = .@"grapheme-churn" });
+    var repeat = try Planner.init(20261115, .{ .cols = 80, .rows = 24 }, .{ .case = .@"grapheme-repeat" });
+    var first_pair: [14]u8 = undefined;
+    for (0..grapheme_repeat_count / 2) |i| {
+        const a = churn.next();
+        const b = repeat.next();
+        try std.testing.expectEqualStrings(a.text, b.text);
+        try std.testing.expectEqual(a.scalars, b.scalars);
+        if (i == 0) @memcpy(&first_pair, b.text);
+    }
+    try std.testing.expectEqualSlices(u8, &first_pair, repeat.next().text);
+    try std.testing.expect(!std.mem.eql(u8, &first_pair, churn.next().text));
 }
