@@ -6,7 +6,7 @@ scratch=tempfile.TemporaryDirectory(prefix="tui-zoo-unicode-")
 G=Path(scratch.name)
 BIN=Path(sys.argv[1]).resolve()
 D=G/"cli";D.mkdir()
-cases=["ascii","utf8","combining","wide","emoji","scripts","presentation","churn","mixed"]
+cases=["ascii","utf8","combining","wide","emoji","scripts","presentation","churn","grapheme-churn","mixed"]
 results=[];position_groups={}
 sgr=re.compile(rb"\x1b\[[0-9;]*m")
 cup=re.compile(rb"\x1b\[(\d+);(\d+)H(?:\x1b\[[0-9;]*m)*")
@@ -49,6 +49,17 @@ for case in cases:
    if pattern in position_groups:assert r["positions_sha256"]==position_groups[pattern]
    else:position_groups[pattern]=r["positions_sha256"]
    results.append(dict(label=label,receipt=r,stdout_sha=hashlib.sha256(p.stdout).hexdigest()))
+# Protect the accepted seed-7 text streams used for historical comparisons.
+# Pin the new case independently; it is deliberately absent from mixed.
+pinned_text_hashes={
+ "mixed":"15d3a32a4abf00589c10f8b6d84d3e1084b642fcdb8cfc1f7706a7b2910d51d9",
+ "churn":"6b76f9bca9bd3a97b065f42338db33138a651cdbf11ab4c4cca74952d892d896",
+ "grapheme-churn":"dc044f68d8d358b1e6fdb954fb8a1635f33bf32d51743d6278e7da5af1f17142",
+}
+for case,expected in pinned_text_hashes.items():
+ receipt=next(entry["receipt"] for entry in results if entry["label"]==f"{case}-random-00")
+ assert receipt["positions_sha256"]=="db73dbb160f1e0524d8876482223c76ad48553ef6bf2240673121e6f5d90b4c4"
+ assert receipt["text_sha256"]==expected,(case,receipt["text_sha256"])
 # Runtime-only timing does not silently enable digest work.
 r=json.loads(run(["unicode","--duration-ms","25","--fps","240","--dose","8"],"duration").stderr)
 assert r["positions_sha256"]is None and r["text_sha256"]is None and not r["digest"]
@@ -57,6 +68,14 @@ p=run(["unicode","--case","churn","--frames","1","--dose","4096","--fps","1000",
 texts=[]
 for m in cup.finditer(p.stdout):texts.append(p.stdout[m.end():p.stdout.index(b"\x1b",m.end())].decode())
 assert len(texts)==4096 and len(set(texts))==4096 and all(0x4e00<=ord(t)<=0x5dff for t in texts)
+# The generated case contains two independent four-scalar clusters per slot.
+p=run(["unicode","--case","grapheme-churn","--frames","2","--dose","128","--fps","1000","--seed","7","--cols","80","--rows","24"],"grapheme-churn256")
+clusters=[]
+for m in cup.finditer(p.stdout):
+ text=p.stdout[m.end():p.stdout.index(b"\x1b",m.end())].decode()
+ assert len(text)==8 and text[0]=="a" and text[4]=="b"
+ clusters.extend([text[:4],text[4:]])
+assert len(clusters)==512 and len(set(clusters))==512
 invalid=[["--case","nope"],["--pattern","nope"],["--digest"],["--cols","1"],["--frames","0"],["--frames","1000001"],["--dose","0"],["--dose","65537"],["--fps","nan"],["--fps","1001"],["--oracle"],["--cursor-only"],["--glyph-set","unicode"],["--case"],["--pattern"],["--frames","2","--digest","--duration-ms","1"]]
 for n,args in enumerate(invalid):
  p=run(["unicode",*args],f"invalid{n}",False)

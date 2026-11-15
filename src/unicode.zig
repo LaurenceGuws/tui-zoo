@@ -3,8 +3,8 @@
 const std = @import("std");
 const terminal = @import("terminal.zig");
 
-/// Names independent text-pressure cases; mixed samples all non-ASCII cases.
-pub const Case = enum { ascii, utf8, combining, wide, emoji, scripts, presentation, churn, mixed };
+/// Names independent text-pressure cases; mixed preserves its seven-case corpus.
+pub const Case = enum { ascii, utf8, combining, wide, emoji, scripts, presentation, churn, @"grapheme-churn", mixed };
 /// Selects random slot edits or a continuous row-major slot sweep.
 pub const Pattern = enum { random, sequential };
 /// Changes colors independently from positions and text.
@@ -44,6 +44,23 @@ const emoji = [_]Sample{ sample("🙂"), sample("🚀"), sample("👩‍💻"), 
 const scripts = [_]Sample{ sample("Աբ"), sample("აბ"), sample("ሀለ"), sample("กข"), sample("אב"), sample("بج"), sample("कख"), sample("αЖ") };
 const presentation = [_]Sample{ sample("♥︎ "), sample("♥️"), sample("☀︎ "), sample("☀️"), sample("✈︎ "), sample("✈️"), sample("©︎ "), sample("©️") };
 
+// Two single-cell clusters per slot. The 112-mark alphabet has enough ordered
+// triples for 262,144 distinct scalar sequences without any retained corpus.
+const grapheme_churn_count: u32 = 262_144;
+const grapheme_mark_count: u32 = 0x70;
+
+fn encodeChurnCluster(bytes: []u8, base: u8, index: u32) void {
+    std.debug.assert(bytes.len == 7 and index < grapheme_churn_count);
+    bytes[0] = base;
+    var remaining = index;
+    for (0..3) |mark_index| {
+        const mark: u16 = @intCast(0x300 + remaining % grapheme_mark_count);
+        remaining /= grapheme_mark_count;
+        bytes[1 + mark_index * 2] = @intCast(0xc0 | (mark >> 6));
+        bytes[2 + mark_index * 2] = @intCast(0x80 | (mark & 0x3f));
+    }
+}
+
 fn corpus(case: Case) []const Sample {
     return switch (case) {
         .ascii => &ascii,
@@ -53,7 +70,7 @@ fn corpus(case: Case) []const Sample {
         .emoji => &emoji,
         .scripts => &scripts,
         .presentation => &presentation,
-        .mixed, .churn => &.{},
+        .mixed, .churn, .@"grapheme-churn" => &.{},
     };
 }
 
@@ -78,7 +95,8 @@ pub const Planner = struct {
     slot_count: usize,
     next_slot: usize = 0,
     next_glyph: u16,
-    generated: [3]u8 = undefined,
+    next_grapheme: u32,
+    generated: [14]u8 = undefined,
 
     /// Validates two-column slots without requiring storage proportional to the grid.
     pub fn init(seed: u64, size: terminal.Size, config: Config) error{InvalidArgs}!Planner {
@@ -93,6 +111,7 @@ pub const Planner = struct {
             .slots_per_row = slots,
             .slot_count = @as(usize, slots) * size.rows,
             .next_glyph = @intCast(seed % 4096),
+            .next_grapheme = @intCast(seed % grapheme_churn_count),
         };
     }
 
@@ -110,12 +129,18 @@ pub const Planner = struct {
             // U+4E00..U+5DFF: valid three-byte CJK scalars, nominal width two.
             const cp: u16 = 0x4e00 + self.next_glyph;
             self.next_glyph = (self.next_glyph + 1) % 4096;
-            self.generated = .{
+            self.generated[0..3].* = .{
                 @intCast(0xe0 | (cp >> 12)),
                 @intCast(0x80 | ((cp >> 6) & 0x3f)),
                 @intCast(0x80 | (cp & 0x3f)),
             };
-            break :blk Sample{ .bytes = &self.generated, .scalars = 1 };
+            break :blk Sample{ .bytes = self.generated[0..3], .scalars = 1 };
+        } else if (case == .@"grapheme-churn") blk: {
+            const first = self.next_grapheme;
+            encodeChurnCluster(self.generated[0..7], 'a', first);
+            encodeChurnCluster(self.generated[7..14], 'b', (first + 1) % grapheme_churn_count);
+            self.next_grapheme = (first + 2) % grapheme_churn_count;
+            break :blk Sample{ .bytes = &self.generated, .scalars = 8 };
         } else blk: {
             const values = corpus(case);
             break :blk values[self.text.random().uintLessThan(usize, values.len)];
@@ -258,4 +283,54 @@ test "Unicode churn visits exactly 4096 valid CJK scalars before repeating" {
         seen[index] = true;
     }
     try std.testing.expectEqual(@as(u21, 0x4e07), try std.unicode.utf8Decode(plan.next().text));
+}
+
+fn churnClusterIndex(cluster: []const u8) !u32 {
+    try std.testing.expectEqual(@as(usize, 7), cluster.len);
+    var result: u32 = 0;
+    var place: u32 = 1;
+    for (0..3) |i| {
+        const mark = try std.unicode.utf8Decode(cluster[1 + 2 * i ..][0..2]);
+        try std.testing.expect(mark >= 0x300 and mark < 0x370);
+        result += @as(u32, mark - 0x300) * place;
+        place *= grapheme_mark_count;
+    }
+    return result;
+}
+
+test "Unicode grapheme churn visits 262144 unique four-scalar clusters before repeating" {
+    var plan = try Planner.init(7, .{ .cols = 80, .rows = 24 }, .{ .case = .@"grapheme-churn" });
+    var seen: [grapheme_churn_count]bool = @splat(false);
+    for (0..grapheme_churn_count / 2) |_| {
+        const op = plan.next();
+        try std.testing.expectEqual(@as(usize, 14), op.text.len);
+        try std.testing.expectEqual(@as(u16, 8), op.scalars);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(op.text));
+        for (0..2) |i| {
+            const cluster = op.text[i * 7 ..][0..7];
+            try std.testing.expectEqual(@as(u8, if (i == 0) 'a' else 'b'), cluster[0]);
+            const index: usize = @intCast(try churnClusterIndex(cluster));
+            try std.testing.expect(index < seen.len and !seen[index]);
+            seen[index] = true;
+        }
+    }
+    const repeated = plan.next();
+    try std.testing.expectEqual(@as(u32, 7), try churnClusterIndex(repeated.text[0..7]));
+    try std.testing.expectEqual(@as(u32, 8), try churnClusterIndex(repeated.text[7..14]));
+}
+
+test "Unicode grapheme churn preserves text across patterns and color settings" {
+    var random = try Planner.init(123, .{ .cols = 79, .rows = 23 }, .{ .case = .@"grapheme-churn" });
+    var sequential = try Planner.init(123, .{ .cols = 79, .rows = 23 }, .{
+        .case = .@"grapheme-churn",
+        .pattern = .sequential,
+        .foreground = true,
+    });
+    for (0..1000) |_| {
+        const a = random.next();
+        const b = sequential.next();
+        try std.testing.expectEqualStrings(a.text, b.text);
+        try std.testing.expectEqual(a.foreground, b.foreground);
+        try std.testing.expectEqual(a.background, b.background);
+    }
 }
